@@ -19,4 +19,5 @@ Hawkshot is a machine learning project focused on predictive maintenance for ele
 - FastAPI
 - Streamlit
 - Docker
+- uv
 
