@@ -58,15 +58,6 @@ def _(mo):
 
 
 @app.cell
-def _():
-    import pandas as pd
-    import matplotlib.pyplot as plt
-    import marimo as mo
-
-    return mo, pd, plt
-
-
-@app.cell
 def _(mo):
     mo.md(r"""
     ## 2. Data Loading
@@ -88,32 +79,28 @@ def _(mo):
 
 
 @app.cell
-def _(pd):
-    df_raw = pd.read_csv(
-        "data/raw/cmapss/train_FD001.txt",
-        sep=r"\s+",
-        header=None,
-    )
-    return (df_raw,)
-
-
-@app.cell
 def _():
-    id_columns = ["engine_id", "cycle"]
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import marimo as mo
+    from hawkshot.data.cmapss import load_fd001
+    from hawkshot.data.cmapss import (
+        OPERATIONAL_COLUMNS,
+        SENSOR_COLUMNS,
+        filter_constant_sensors,
+    )
 
-    operational_columns = [f"operational_setting_{i}" for i in range(1, 4)]
-
-    sensor_columns = [f"sensor_{i}" for i in range(1, 22)]
-
-    column_names = id_columns + operational_columns + sensor_columns
-    return column_names, operational_columns, sensor_columns
-
-
-@app.cell
-def _(column_names, df_raw):
-    df_raw.columns = column_names
+    df_raw = load_fd001("data/raw/cmapss")
     df_raw.head()
-    return
+    return (
+        OPERATIONAL_COLUMNS,
+        SENSOR_COLUMNS,
+        df_raw,
+        filter_constant_sensors,
+        mo,
+        pd,
+        plt,
+    )
 
 
 @app.cell
@@ -146,14 +133,14 @@ def _(df_raw):
 
 
 @app.cell
-def _(df_raw, engine_lifetimes, operational_columns, pd, sensor_columns):
+def _(OPERATIONAL_COLUMNS, SENSOR_COLUMNS, df_raw, engine_lifetimes, pd):
     dataset_summary = pd.Series(
         {
             "observations": len(df_raw),
             "engines": df_raw["engine_id"].nunique(),
             "columns": df_raw.shape[1],
-            "operational_settings": len(operational_columns),
-            "sensors": len(sensor_columns),
+            "operational_settings": len(OPERATIONAL_COLUMNS),
+            "sensors": len(SENSOR_COLUMNS),
             "missing_values": df_raw.isna().sum().sum(),
             "duplicated_rows": df_raw.duplicated().sum(),
             "duplicated_engine_cycles": df_raw[["engine_id", "cycle"]]
@@ -220,15 +207,15 @@ def _(mo):
 
 
 @app.cell
-def _(df_raw, pd, sensor_columns):
+def _(SENSOR_COLUMNS, df_raw, pd):
     sensor_profile = pd.DataFrame(
         {
-            "unique_values": df_raw[sensor_columns].nunique(),
-            "minimum": df_raw[sensor_columns].min(),
-            "maximum": df_raw[sensor_columns].max(),
-            "mean": df_raw[sensor_columns].mean(),
-            "std": df_raw[sensor_columns].std(),
-            "variance": df_raw[sensor_columns].var(),
+            "unique_values": df_raw[SENSOR_COLUMNS].nunique(),
+            "minimum": df_raw[SENSOR_COLUMNS].min(),
+            "maximum": df_raw[SENSOR_COLUMNS].max(),
+            "mean": df_raw[SENSOR_COLUMNS].mean(),
+            "std": df_raw[SENSOR_COLUMNS].std(),
+            "variance": df_raw[SENSOR_COLUMNS].var(),
         }
     )
 
@@ -242,38 +229,33 @@ def _(df_raw, pd, sensor_columns):
 
 
 @app.cell
-def _(sensor_profile):
-    constant_sensors = sensor_profile.index[
-        sensor_profile["unique_values"] == 1
-    ].tolist()
+def _(df_raw, filter_constant_sensors):
+    df_filtered, removed_sensors = filter_constant_sensors(df_raw)
 
-    effectively_constant_sensors = ["sensor_6"]
-
-    removed_sensors = constant_sensors + effectively_constant_sensors
-
-    removed_sensors
-    return (removed_sensors,)
-
-
-@app.cell
-def _(df_raw, removed_sensors):
-    df_filtered = df_raw.drop(columns=removed_sensors)
     df_filtered.head()
-    return (df_filtered,)
+
+    return df_filtered, removed_sensors
 
 
 @app.cell
-def _(df_filtered):
+def _(removed_sensors):
+    removed_sensors
+    return
+
+
+@app.cell
+def _(SENSOR_COLUMNS, df_filtered):
     available_sensors = [
-        column for column in df_filtered.columns if column.startswith("sensor_")
+        sensor for sensor in SENSOR_COLUMNS if sensor in df_filtered.columns
     ]
+
+    available_sensors
     return (available_sensors,)
 
 
 @app.cell(hide_code=True)
 def _(available_sensors, df_filtered, mo):
     mo.md(f"""
-
     The analysis identified six strictly constant sensors:
 
     `sensor_1`, `sensor_5`, `sensor_10`, `sensor_16`, `sensor_18`, and `sensor_19`.
@@ -293,7 +275,6 @@ def _(available_sensors, df_filtered, mo):
     - **{df_filtered.shape[0]:,} observations**
     - **{df_filtered.shape[1]} columns**
     - **{len(available_sensors)} remaining sensors**
-
     """)
     return
 

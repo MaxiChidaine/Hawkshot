@@ -8,7 +8,16 @@ app = marimo.App(width="medium")
 def _():
     import marimo as mo
 
-    return (mo,)
+    from hawkshot.data.cmapss import (
+        SENSOR_COLUMNS,
+        filter_constant_sensors,
+        load_fd001,
+    )
+
+    df_raw = load_fd001("data/raw/cmapss")
+
+    df_filtered, removed_sensors = filter_constant_sensors(df_raw)
+    return SENSOR_COLUMNS, df_filtered, mo
 
 
 @app.cell
@@ -36,7 +45,11 @@ def _(mo):
 
 
 @app.cell
-def _(available_sensors, mo):
+def _(SENSOR_COLUMNS, df_filtered, mo):
+    available_sensors = [
+        sensor for sensor in SENSOR_COLUMNS if sensor in df_filtered.columns
+    ]
+
     sensor_selector = mo.ui.multiselect(
         options=available_sensors,
         value=["sensor_2", "sensor_4", "sensor_11"],
@@ -55,7 +68,6 @@ def _(mo):
     )
 
     smoothing_window
-
     return (smoothing_window,)
 
 
