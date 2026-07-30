@@ -1,7 +1,7 @@
 [project]
 name = "hawkshot"
 version = "0.1.0"
-description = "Add your description here"
+description = "End-to-end predictive maintenance platform for turbo fan engines."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
