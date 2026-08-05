@@ -580,7 +580,6 @@ def _(inter_sensor_spearman_by_engine):
         ],
         ascending=False,
     )
-
     return (inter_sensor_summary,)
 
 
@@ -599,7 +598,6 @@ def _(available_sensors, inter_sensor_summary, pd):
 
         heatmap_matrix.loc[_sensor_a, _sensor_b] = _rho
         heatmap_matrix.loc[_sensor_b, _sensor_a] = _rho
-
     return (heatmap_matrix,)
 
 
@@ -699,7 +697,7 @@ def _(heatmap_matrix, np, pd, plt, sensor_order):
 @app.cell
 def _(mo):
     mo.md(r"""
-    ### Interim Conclusion and Next Question
+    ### Interim conclusion and next question
 
     The heatmap reveals two broad directional groups. Sensors that increase with engine age are positively correlated with one another, as are sensors that decrease with age. Relationships between the two groups are predominantly negative, which is consistent with a shared age-related pattern expressed in opposite directions.
 
@@ -710,6 +708,441 @@ def _(mo):
     'sensor_9' and 'sensor_14' must still be interpreted cautiously. Their median pairwise relationships appear moderate to strong, but the previous engine-level results showed considerable variation in sign and magnitude across the fleet.
 
     The next question is therefore not only whether the sensors are related to engine age, but whether they become informative at the same stage of enginelife.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 6. Sensor trends across engine life phases
+
+    The previous analyses evaluated sensor trends over complete engine trajectories. However, a strong overall relationship with engine age does not indicate when the degradation signal become visible.
+
+    Some sensors may evolve progressively throughout engine life, whereas others may remain relatively stable before changing more strongly near failure. These behaviours could have different implications for Remaining Useful Life prediction.
+
+    - **Early life:** 0% to 50%
+    - **Intermediate life:** 50% to 80%
+    - **Late life:** 80% to 100%
+
+    Relative life position is used only for exploratory analysis because the final lifetime of an operating engine would not be known in real predictive maintenance application.
+    """)
+    return
+
+
+@app.cell
+def _(df_filtered, pd):
+    df_life_phases = df_filtered.copy()
+
+    df_life_phases["max_cycle"] = df_life_phases.groupby("engine_id")[
+        "cycle"
+    ].transform("max")
+
+    df_life_phases["relative_cycle"] = (
+        df_life_phases["cycle"] / df_life_phases["max_cycle"]
+    )
+
+    df_life_phases["life_phase"] = pd.cut(
+        df_life_phases["relative_cycle"],
+        bins=[0, 0.5, 0.8, 1.0],
+        labels=["early", "intermediate", "late"],
+        include_lowest=True,
+    )
+
+    df_life_phases[
+        ["engine_id", "cycle", "max_cycle", "relative_cycle", "life_phase"]
+    ].head()
+    return (df_life_phases,)
+
+
+@app.cell
+def _(available_sensors, df_life_phases, pd):
+    _phase_spearman_results = []
+
+    for _sensor in available_sensors:
+        for _engine_id in df_life_phases["engine_id"].unique():
+            _engine_data = df_life_phases[df_life_phases["engine_id"] == _engine_id]
+
+            for _phase in ["early", "intermediate", "late"]:
+                _phase_data = _engine_data[_engine_data["life_phase"] == _phase]
+
+                _rho = _phase_data["cycle"].corr(
+                    _phase_data[_sensor],
+                    method="spearman",
+                )
+
+                _phase_spearman_results.append(
+                    {
+                        "engine_id": _engine_id,
+                        "sensor": _sensor,
+                        "life_phase": _phase,
+                        "spearman_rho": _rho,
+                    }
+                )
+
+    spearman_by_life_phase = pd.DataFrame(_phase_spearman_results)
+
+    return (spearman_by_life_phase,)
+
+
+@app.cell
+def _(spearman_by_life_phase):
+    life_phase_summary = (
+        spearman_by_life_phase.assign(absolute_rho=lambda df: df["spearman_rho"].abs())
+        .groupby(
+            ["sensor", "life_phase"],
+            observed=True,
+        )
+        .agg(
+            median_rho=("spearman_rho", "median"),
+            median_absolute_rho=("absolute_rho", "median"),
+            q1_rho=("spearman_rho", lambda values: values.quantile(0.25)),
+            q3_rho=("spearman_rho", lambda values: values.quantile(0.75)),
+            positive_share=("spearman_rho", lambda values: (values > 0.5).mean()),
+            negative_share=("spearman_rho", lambda values: (values < 0.5).mean()),
+        )
+        .reset_index()
+    )
+
+    life_phase_summary["iqr_rho"] = (
+        life_phase_summary["q3_rho"] - life_phase_summary["q1_rho"]
+    )
+
+    life_phase_summary["direction_consistency"] = life_phase_summary[
+        ["positive_share", "negative_share"]
+    ].max(axis=1)
+
+    life_phase_summary.round(3)
+    return (life_phase_summary,)
+
+
+@app.cell
+def _(available_sensors, life_phase_summary):
+    phase_order = ["early", "intermediate", "late"]
+
+    phase_strength_matrix = life_phase_summary.pivot(
+        index="sensor",
+        columns="life_phase",
+        values="median_absolute_rho",
+    ).reindex(
+        index=available_sensors,
+        columns=phase_order,
+    )
+
+    phase_strength_matrix.round(3)
+    return phase_order, phase_strength_matrix
+
+
+@app.cell
+def _(phase_order, phase_strength_matrix, plt):
+    _fig, _ax = plt.subplots(figsize=(7, 8))
+
+    _image = _ax.imshow(
+        phase_strength_matrix,
+        vmin=0,
+        vmax=1,
+        cmap="YlOrRd",
+        aspect="auto",
+    )
+
+    _ax.set_xticks(range(len(phase_order)))
+    _ax.set_xticklabels(
+        ["Early", "Intermediate", "Late"],
+    )
+
+    _ax.set_yticks(range(len(phase_strength_matrix)))
+    _ax.set_yticklabels(phase_strength_matrix.index)
+
+    _ax.set_title(
+        "Median absolute Spearman correlation across life phases",
+        pad=16,
+    )
+
+    for _row_index in range(len(phase_strength_matrix.index)):
+        for _column_index in range(len(phase_order)):
+            _value = phase_strength_matrix.iloc[
+                _row_index,
+                _column_index,
+            ]
+
+            _text_color = "white" if _value >= 0.6 else "black"
+
+            _ax.text(
+                _column_index,
+                _row_index,
+                f"{_value:.2f}",
+                ha="center",
+                va="center",
+                color=_text_color,
+                fontsize=8,
+            )
+    _colorbar = _fig.colorbar(
+        _image,
+        ax=_ax,
+        shrink=0.8,
+    )
+
+    _colorbar.set_label("Median absolute Spearman rho")
+
+    _fig.tight_layout
+    _fig
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ### Strength of sensor trends across life engine
+
+    The median absolute correlations reveal a common pattern across all retained sensors, a monotonic relationship with the operation cycle become progressively stronger as engines approach failure.
+
+    During early life, the median absolute correlations remain relatively weak, ranging from approximately 0.13 to 0.28. They increase during the intermediate phase, reaching values between 0.32 and 0.57, and become substantially stronger during late life, where they range from 0.54 to 0.85.
+
+    This progression suggests that the degradation signal is not distributed uniformly throughout engine life. Sensor measurements contain relatively limited monotonic information during the first half of the trajectories, while their evolution becomes increasingly structured during the intermediate and late phase.
+
+    'sensor_11, 'sensor_12', 'sensor_4', and 'sensor_7' already show some of the strongest relationships during early and intermediate life and remain highly informative during the late phase. In contrast, several sensors such as 'sensor_2', 'sensor_3' and 'sensor_17' show particularly weak early-life relationships before becoming more strongly associated with operating cycle near failure.
+
+    'sensor_9' and 'sensor_14' present the strongest late-life absolute correlations, with the median values of approximately 0.80 and 0.85 respectively. However, these results must be interpreted cautiously. Absolute correlation measures the strength of a relationship independently of its direction. A high value may therefore describe either a strong increasing trend or a strong decreasing trend, and it does not indicate whether the same direction is observed across all engines.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ### Local trend consistency across engines
+
+    The signed median correlations preserve the same overall directios identifies over complete engine trajectories, increasing sensors remain positive, while decreasing sensors remain negative across the three life phases.
+
+    Because this result largely confirms the previous full-life analysis, an additional signed-correlation heatmap is not requiered. The remaining question is whether the typical direction is shared consistently across all engines.
+
+    Direction consistency is therefore examined at the phase level. This analysis reveals whether a string local trend represent a common fleet-wide behaviour or whether different engines evovle in opposite directions during the same life phase.
+    """)
+    return
+
+
+@app.cell
+def _(life_phase_summary):
+    unstable_phase_trends = life_phase_summary[
+        life_phase_summary["direction_consistency"] < 0.9
+    ][
+        [
+            "sensor",
+            "life_phase",
+            "median_rho",
+            "median_absolute_rho",
+            "direction_consistency",
+        ]
+    ].sort_values(
+        by="direction_consistency",
+        ascending=True,
+    )
+
+    unstable_phase_trends
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ### Strengthening of sensor trends between life phases
+
+    The phase level consistency analysis shows whether the dominant direction of a sensor trend is shared across across engines. However, it does not indicate when the relationship with the engine age becomes substanctially stronger.
+
+    A sensor may present a relatively stable direction throughout engine life while its monotonic signal emerges progressively or becomes pronounced only near failure. Distinguishing these temporal behaviours may help to identify sensors that act as gradual ageing indicators and sensors that are primarily sensitve to advanced degradation.
+
+    The phase-to-phase differences in median absolute Spearman correlation are therefore calculated :
+
+    - **Intermediate - early** measures how strongly the signal develops after the first half of engine life.
+    - **Late - intermediate** measures the additional strengthening occuring near failure.
+    - **Late - early** represents the total increase in trend strength across the analysed trajectorY.
+
+    These differencies quantify the timing of signal emergence. They do not, by themselves, establish whether the underlying physical mechanism corresponds to linear wear, a threshold effect, controller response, or an abrupt anomaly.
+    """)
+    return
+
+
+@app.cell
+def _(phase_strength_matrix):
+    phase_delta_summary = phase_strength_matrix.copy()
+
+    phase_delta_summary["delta_intermediate_early"] = (
+        phase_delta_summary["intermediate"] - phase_delta_summary["early"]
+    )
+    phase_delta_summary["delta_late_intermediate"] = (
+        phase_delta_summary["late"] - phase_delta_summary["intermediate"]
+    )
+    phase_delta_summary["delta_late_early"] = (
+        phase_delta_summary["late"] - phase_delta_summary["early"]
+    )
+
+    phase_delta_display = phase_delta_summary[
+        [
+            "delta_intermediate_early",
+            "delta_late_intermediate",
+            "delta_late_early",
+        ]
+    ].sort_values(
+        by="delta_late_early",
+        ascending=False,
+    )
+
+    phase_delta_display.round(3)
+    return (phase_delta_summary,)
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ### Exploratory temporal sensor profiles
+
+    The phase-to-phase deltas indicate when the monotonic relationship between each sensor and engine age become stronger. Direction consistency indicates whether the dominant local trend is shared across engines.
+
+    These two dimensions are now commbined to provide a compact description of each sensor's temporal behaviour :
+
+    - The **timing dimension** distinguishes signals that strengthen mainly before the late phase, mainly during the transition to late life, or relatively evenly across both transitions.
+    - The **consistency dimension** distinguishes behaviours that are broadly shared across the fleet from behaviours that depend more strongly on the individual engine.
+
+    The timing profiles is derived from the proportion of the total strengthening that occurs between the intermediateand the late phases. The consistency profile is derived from the lowest direction consistency observed across the three life phases.
+
+    The resulting profiles are exploratory labels rather than data-driven clusters or validated physical categories. Their boundaries are defined using heuristic thresholds chosen to support interpretation, and sensors close to a boundary could chage category if the thresholds were modified. The underlying continuous values therefore remain the primary results, while the labels are used only as concise descriptive summaries.
+    """)
+    return
+
+
+@app.cell
+def _(available_sensors, life_phase_summary, phase_delta_summary, phase_order):
+    phase_consistency_matrix = (
+        life_phase_summary.pivot(
+            index="sensor",
+            columns="life_phase",
+            values="direction_consistency",
+        )
+        .reindex(
+            index=available_sensors,
+            columns=phase_order,
+        )
+        .rename(
+            columns={
+                "early": "consistency_early",
+                "intermediate": "consistency_intermediate",
+                "late": "consistency_late",
+            }
+        )
+    )
+
+    sensor_temporal_profiles = phase_delta_summary[
+        [
+            "delta_intermediate_early",
+            "delta_late_intermediate",
+            "delta_late_early",
+        ]
+    ].join(phase_consistency_matrix)
+
+    sensor_temporal_profiles["late_strengthening_share"] = (
+        sensor_temporal_profiles["delta_late_intermediate"]
+        / sensor_temporal_profiles["delta_late_early"]
+    )
+
+    sensor_temporal_profiles["minimum_direction_consistency"] = (
+        sensor_temporal_profiles[
+            [
+                "consistency_early",
+                "consistency_intermediate",
+                "consistency_late",
+            ]
+        ].min(axis=1)
+    )
+    return (sensor_temporal_profiles,)
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    For the timing profile, a late-strengthening share below 0.45 is labelled **early-to_intermediate dominant**, a value above 0.55 is labelled **late-dominant**, and values between these limits are labelled **balanced progression**. The interval from 0.45 to 0.55 provides a small tolerance arround an equal distribution of strengthening between both transitions.
+
+    For the consistency profile, a minimum direction consistencey of at least 0.80 is labelled **stable across engine**, a value between 0.65 and 0.80 is labelled **moderately heterogeneous**, and a value below 0.65 is labelled **engine-dependent**.
+
+    These thresholds are not physical constants and should not be interpreted as formal decision boundaries.
+    """)
+    return
+
+
+@app.cell
+def _():
+    def classify_timing(_row):
+        _late_share = _row["late_strengthening_share"]
+
+        if _late_share > 0.55:
+            return "Late-dominant"
+        elif _late_share < 0.45:
+            return "Early-to-intermediate dominant"
+
+        return "Balanced progression"
+
+    def classify_consistency(_values):
+        if _values >= 0.8:
+            return "Stable across engines"
+
+        elif _values >= 0.65:
+            return "Moderately heterogeneous"
+
+        return "Engine-dependent"
+
+    return classify_consistency, classify_timing
+
+
+@app.cell
+def _(classify_consistency, classify_timing, sensor_temporal_profiles):
+    sensor_temporal_profiles["timing_profile"] = sensor_temporal_profiles.apply(
+        classify_timing,
+        axis=1,
+    )
+
+    sensor_temporal_profiles["consistency_profile"] = sensor_temporal_profiles[
+        "minimum_direction_consistency"
+    ].apply(classify_consistency)
+    return
+
+
+@app.cell
+def _(sensor_temporal_profiles):
+    sensor_temporal_profile_display = sensor_temporal_profiles[
+        [
+            "timing_profile",
+            "late_strengthening_share",
+            "delta_intermediate_early",
+            "delta_late_intermediate",
+            "consistency_profile",
+            "minimum_direction_consistency",
+            "consistency_late",
+        ]
+    ].sort_values(
+        by=[
+            "timing_profile",
+            "minimum_direction_consistency",
+        ],
+        ascending=[True, False],
+    )
+
+    sensor_temporal_profile_display.round(3)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ### Interpretation of the exploratory temporal profiles
+
+    The exploratory classification identifies four sensors with fully stable phase-level directions. 'sensor_7', 'sensor_8', 'sensor_12', 'sensor_20' and 'sensor_21'. The first two show relatively progressive strengthening, whereas 'sensor_20' and 'sensor_21' gain a larger proportion of their trend strength during late life. These sensors therefore appear to provide the most repeatable fleet-level temporal signals.
+
+    Seven sensors are labelled as engine-dependent. However, this result must be interpreted in light of the classification rule. The consistency profile is based on the lowest value observed across the three phases. A single heterogeneous phase is therefore sufficient to assign this label to the whole sensor.
+
+    This distinction is important for 'sensor_4', 'sensor_8', 'sensor_13' and 'sensor_15'. Although their minimum consistency falls below the selected threshold, their late-life consistency ranges from 0.87 to 0.97. Their behaviour is therefore better described as locally heterogeneous but largely consistent near failure, rather tyhan engine-dependent throughout the complete trajectory.
+
+    In contrast, 'sensor_3', 'sensor_9' and 'sensor_14' retain low direction consistency during late life. The latter two nevertheless develop particularly strong late-stage monotonic relationships. They may therefore contain useful information about advanced degradation at the individual-engine level without following one universal fleet-wide direction.
+
+    Overall, the combined analysis separates consistently progressive indicators, consistent late-satge indicators, locally heterogeneous trajectories, and signals whose late-life response remains engine-dependent. These profiles are descriptive rather than validated physical categories, and the continuous strength and consistency measures should remain the primary basis for interpretation.
     """)
     return
 
