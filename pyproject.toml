@@ -10,6 +10,7 @@ dependencies = [
     "nbformat>=5.10.4",
     "pandas>=3.0.3",
     "playwright>=1.61.0",
+    "scikit-learn>=1.9.0",
     "scipy>=1.17.1",
 ]
 
