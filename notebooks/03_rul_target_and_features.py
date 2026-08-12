@@ -52,7 +52,8 @@ def _():
     import matplotlib.pyplot as plt
     import pandas as pd
     from sklearn.model_selection import train_test_split
-    import numpy as np
+
+    from hawkshot.features.temporal import add_temporal_features
 
     from hawkshot.data.cmapss import (
         SENSOR_COLUMNS,
@@ -68,14 +69,12 @@ def _():
     available_sensors = [
         sensor for sensor in SENSOR_COLUMNS if sensor in df_filtered.columns
     ]
-
-    df_rul = df_filtered.copy()
     return (
         OPERATIONAL_COLUMNS,
+        add_temporal_features,
         available_sensors,
-        df_rul,
+        df_filtered,
         mo,
-        np,
         pd,
         plt,
         train_test_split,
@@ -83,11 +82,13 @@ def _():
 
 
 @app.cell
-def _(df_rul):
-    df_rul["max_cycle"] = df_rul.groupby("engine_id")["cycle"].transform("max")
+def _(df_filtered):
+    _max_cycle = df_filtered.groupby("engine_id")["cycle"].transform("max")
 
-    df_rul["rul"] = df_rul["max_cycle"] - df_rul["cycle"]
-    return
+    df_rul = df_filtered.assign(
+        max_cycle=_max_cycle, rul=_max_cycle - df_filtered["cycle"]
+    )
+    return (df_rul,)
 
 
 @app.cell
@@ -154,8 +155,8 @@ def _(mo):
 
 @app.cell
 def _(df_rul, rul_cap):
-    df_rul["rul_capped"] = df_rul["rul"].clip(upper=rul_cap)
-    return
+    df_prepared = df_rul.assign(rul_capped=df_rul["rul"].clip(upper=rul_cap))
+    return (df_prepared,)
 
 
 @app.cell
@@ -167,7 +168,7 @@ def _(mo):
 
     A valid predictor must be observable without requiring knowledge of the engine's future trajectory.
 
-    The retained sensor measurements and operational settings satisfy this condition and are therefore considered candidate features. TThe retained sensors are considered candidate features because the previous analysis showed that they contain structured degradation-related information but the same cannot be said for the operational setting as, although they do not represent a data leakage, there is no information regarding their usefulness to predict RUL. Their potential as features will be assessed below.
+    The retained sensor measurements and operational settings satisfy this condition and are therefore considered candidate features. The retained sensors are included in the initial feature set because the previous analysis showed that they contain structured degradation-related information. The usefulness of the operational settings has not yet been established and is assessed below.
 
     `engine_id` is required to identify trajectories and to create engine-level data splits, but it is not used as a predictive feature because its numerical value is only an arbitrary identifier.
 
@@ -183,7 +184,7 @@ def _(mo):
     mo.md(r"""
     ### Operational Settings Assessment
 
-    The operational setting have not yet been evaluated as potential predictors. Before defining the initial feature set, their behaviour is examined from two perspectives:
+    The operational settings have not yet been evaluated as potential predictors. Before defining the initial feature set, their behaviour is examined from two perspectives:
 
     - their relationship with engine age.
     - their relationship with the retained sensor measurements.
@@ -329,7 +330,7 @@ def _(mo):
 
     For this reason, `cycle` is not discarded. Instead, separate feature sets will be prepared so that its contribution can later be evaluated explicitly :
 
-    -**Sensor only**, using the 14 retained sensor measurements.
+    - **Sensor only**, using the 14 retained sensor measurements.
     - **Sensors + cycle**, adding the current engine age.
 
     A cycle-only baseline may also be evaluated during modelling. Comparing these configurations will make it possible to determine whether the sensor measurements provide predictive information beyond engine age alone.
@@ -356,8 +357,8 @@ def _(mo):
 
 
 @app.cell
-def _(df_rul, train_test_split):
-    engine_ids = df_rul["engine_id"].unique()
+def _(df_prepared, train_test_split):
+    engine_ids = df_prepared["engine_id"].unique()
 
     train_engines, validation_engines = train_test_split(
         engine_ids, test_size=0.2, random_state=42
@@ -366,10 +367,12 @@ def _(df_rul, train_test_split):
 
 
 @app.cell
-def _(df_rul, train_engines, validation_engines):
-    df_train = df_rul[df_rul["engine_id"].isin(train_engines)].copy()
+def _(df_prepared, train_engines, validation_engines):
+    df_train = df_prepared[df_prepared["engine_id"].isin(train_engines)].copy()
 
-    df_validation = df_rul[df_rul["engine_id"].isin(validation_engines)].copy()
+    df_validation = df_prepared[
+        df_prepared["engine_id"].isin(validation_engines)
+    ].copy()
     return df_train, df_validation
 
 
@@ -459,6 +462,7 @@ def _(df_train, df_validation, sensor_cycle_features, sensor_features):
 
     assert len(X_train_cycle) == len(y_train)
     assert len(X_validation_cycle) == len(y_validation)
+    return
 
 
 @app.cell
@@ -476,7 +480,7 @@ def _(mo):
     - **Delta** measures the change between the beginning and the end of a recent window.
     - **Slope** estimates the overall rate and direction of change across the window using a first-degree linear fit.
 
-    The original sensor measurements are retained alongside these derived features because current sensor level and recent evaluation may provide complementary information.
+    The original sensor measurements are retained alongside these derived features because current sensor level and recent evolution may provide complementary information.
     """)
     return
 
@@ -514,25 +518,6 @@ def _(mo):
 
 
 @app.cell
-def _(np):
-    def compute_slope(values):
-        if len(values) < 2:
-            return 0.0
-
-        time_steps = np.arange(len(values))
-
-        slope, _ = np.polyfit(
-            time_steps,
-            values,
-            1,
-        )
-
-        return slope
-
-    return (compute_slope,)
-
-
-@app.cell
 def _(mo):
     mo.md(r"""
     The slope is obtained by fitting a straight line to the sensor measurements contained in the current temporal window. Its coefficient represents the average rate of change of the sensor over that period.
@@ -545,49 +530,12 @@ def _(mo):
 
 
 @app.cell
-def _(compute_slope):
-    def add_temporal_features(df, sensors, config):
-        df_features = df.sort_values(["engine_id", "cycle"]).copy()
-
-        for sensor in sensors:
-            grouped_sensor = df_features.groupby("engine_id")[sensor]
-
-            for window in config.get("mean", []):
-                df_features[f"{sensor}_mean_{window}"] = grouped_sensor.transform(
-                    lambda values: values.rolling(
-                        window=window,
-                        min_periods=1,
-                    ).mean()
-                )
-            for window in config.get("delta", []):
-                df_features[f"{sensor}_delta_{window}"] = grouped_sensor.transform(
-                    lambda values: values.rolling(
-                        window=window,
-                        min_periods=1,
-                    ).apply(
-                        lambda window_values: window_values.iloc[-1]
-                        - window_values.iloc[0]
-                    )
-                )
-
-            for window in config.get("slope", []):
-                df_features[f"{sensor}_slope_{window}"] = grouped_sensor.transform(
-                    lambda values: values.rolling(
-                        window=window,
-                        min_periods=1,
-                    ).apply(compute_slope)
-                )
-        return df_features
-
-    return (add_temporal_features,)
-
-
-@app.cell
 def _(
     add_temporal_features,
     available_sensors,
     df_train,
     df_validation,
+    pd,
     temporal_config,
 ):
     df_train_temporal = add_temporal_features(
@@ -629,8 +577,18 @@ def _(
         "raw_temporal": raw_temporal_features,
     }
 
-    for name, features in feature_sets.items():
-        ...
+    feature_set_summary = pd.DataFrame(
+        [
+            {
+                "feature_set": name,
+                "n_features": len(features),
+            }
+            for name, features in feature_sets.items()
+        ]
+    )
+
+    feature_set_summary
+    return df_train_temporal, df_validation_temporal, temporal_features
 
 
 @app.cell
@@ -695,6 +653,31 @@ def _(mo):
 
     These checks confirm that temporal features are generated independently within each engine trajectory and using only information available up to the current cycle.
     """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    # 7. Conclusions and modelling decisions
+
+    This notebook transformed the FD001 run-to-failure trajectories into a supervised learning dataset suitable for Remaining Useful Life prediction.
+
+    The original linear RUL was first reconstructed from the complete run-to-failure trajectories and retained as the physical ground-truth target. A capped RUL of 125 cycles was then introduced as the initial modelling target. This threshold does not represent a physical transition between healthy and degraded states, but rather a modelling assumption intended to reduce the precision required when engines are still far from failure and the degradation-related sensor signal is weaker.
+
+    The predictor analysis also clarified which variables may legitimately be used by the model. The 14 retained sensors remain the main source of degradation-related information. The operational settings are excluded from the initial baseline because one of them is constant and the other two show no meaningful monotonic relationship with engine age or the retained sensor measurements. Their possible nonlinear contribution is not ruled out and may later be reassessed through model comparison. The operating cycle is treated separately, it is available at prediction time and therefore does not consitute data leakage, but it may provide a strong shortcut through engine age. its contribution will consequently be evaluated independently from the sensor measurements.
+
+    To obtain a realistic validation procedure, the data were split at the engine level rather than at the observation level. Eighty engines are used for training and twenty are reserved for validation, while the official FD001 test remains untouched for final evaluation. Any data-dependent preprocessing required by future models will be learned exclusively from the training engines and then applied unchanged to validation data.
+
+    Several feature configurations are now available for comparison, cycle only, raw sensors, raw sensors combined with cycle, and raw sensors enriched with temporal features. The temporal features were designed to describe recent sensor evolution through rolling means, deltas, and slops. They are computed causally within each engine trajectory, using only the current and previous observations, and their window sizes can be configured independently.
+
+    The next stage will therefore focus on baseline regression models evaluated on the fixed validation set. By comparing the prepared feature configurations one at a time, it will be possible to determine how much predictive information comes from engine age, instantaneous sensor values, and recent sensor dynamics, and to identify which modelling choices genuinely improves RUL prediction.
+    """)
+    return
+
+
+@app.cell
+def _():
     return
 
 
