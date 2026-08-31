@@ -8,12 +8,14 @@ app = marimo.App(width="medium")
 def _():
     import pandas as pd
     import matplotlib.pyplot as plt
+    import numpy as np
 
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import mean_absolute_error, root_mean_squared_error
     from sklearn.linear_model import LinearRegression
     from sklearn.preprocessing import StandardScaler
     from sklearn.pipeline import Pipeline
+    from sklearn.linear_model import Ridge, Lasso
 
     from hawkshot.data.cmapss import (
         SENSOR_COLUMNS,
@@ -29,15 +31,17 @@ def _():
     available_sensors = [
         sensor for sensor in SENSOR_COLUMNS if sensor in df_filtered.columns
     ]
-
     return (
+        Lasso,
         LinearRegression,
         Pipeline,
+        Ridge,
         StandardScaler,
         add_temporal_features,
         available_sensors,
         df_filtered,
         mean_absolute_error,
+        np,
         pd,
         plt,
         root_mean_squared_error,
@@ -420,6 +424,223 @@ def _(
         y_validation, y_pred_raw_temporal_cycle
     )
     f"MAE : {mae_raw_temporal_cycle}, RMSE: {rmse_raw_temporal_cycle}"
+    return (
+        X_train_raw_temporal_cycle,
+        X_validation_temporal_cycle,
+        model_raw_temporal_cycle,
+        raw_temporal_cycle_features,
+    )
+
+
+@app.cell
+def _(
+    Pipeline,
+    Ridge,
+    StandardScaler,
+    X_train_raw_temporal_cycle,
+    X_validation_temporal_cycle,
+    alpha,
+    alphas,
+    mean_absolute_error,
+    pd,
+    root_mean_squared_error,
+    y_train,
+    y_validation,
+):
+    _alphas = [0.001, 0.01, 0.1, 1, 10, 100, 1000]
+    maes_ridge = []
+    rmses_ridge = []
+
+    for _alpha in _alphas:
+        model_ridge = Pipeline([("scaler", StandardScaler()), ("ridge", Ridge(alpha))])
+
+        model_ridge.fit(X_train_raw_temporal_cycle, y_train)
+
+        y_pred_ridge = model_ridge.predict(X_validation_temporal_cycle)
+
+        mae_ridge = mean_absolute_error(y_validation, y_pred_ridge)
+
+        maes_ridge.append(mae_ridge)
+
+        rmse_ridge = root_mean_squared_error(y_validation, y_pred_ridge)
+
+        rmses_ridge.append(rmse_ridge)
+
+    pd.DataFrame({"alpha": alphas, "MAE": maes_ridge, "RMSE": rmses_ridge}).round(3)
+    return (model_ridge,)
+
+
+@app.cell
+def _(model_ridge):
+    _coef = model_ridge.named_steps["ridge"].coef_
+    _coef
+    return
+
+
+@app.cell
+def _(
+    Pipeline,
+    Ridge,
+    StandardScaler,
+    X_train_raw_temporal_cycle,
+    model_raw_temporal_cycle,
+    np,
+    pd,
+    y_train,
+):
+    model_ridge_alpha_10 = Pipeline(
+        [("scaler", StandardScaler()), ("ridge", Ridge(alpha=10))]
+    )
+
+    model_ridge_alpha_1000 = Pipeline(
+        [("scaler", StandardScaler()), ("ridge", Ridge(alpha=1000))]
+    )
+
+    model_ridge_alpha_10.fit(X_train_raw_temporal_cycle, y_train)
+    model_ridge_alpha_1000.fit(X_train_raw_temporal_cycle, y_train)
+
+    coef_ridge_alpha_10 = model_ridge_alpha_10.named_steps["ridge"].coef_
+
+    coef_ridge_alpha_1000 = model_ridge_alpha_1000.named_steps["ridge"].coef_
+
+    coef_linear_regression = model_raw_temporal_cycle.named_steps["regressor"].coef_
+
+    _coefs = [coef_linear_regression, coef_ridge_alpha_10, coef_ridge_alpha_1000]
+    norm_L2 = []
+    max_absolute = []
+
+    for _coef in _coefs:
+        norm_L2.append(np.linalg.norm(_coef))
+        max_absolute.append(max(abs(_coef)))
+
+    _models = ["linear_regression", "ridge_10", "ridge_1000"]
+
+    pd.DataFrame(
+        {
+            "Model": _models,
+            "L2_norm": norm_L2,
+            "max_abs": max_absolute,
+        }
+    ).round(2)
+
+    return
+
+
+@app.cell
+def _(
+    Lasso,
+    Pipeline,
+    StandardScaler,
+    X_train_raw_temporal_cycle,
+    X_validation_temporal_cycle,
+    mean_absolute_error,
+    pd,
+    root_mean_squared_error,
+    y_train,
+    y_validation,
+):
+    _alphas = [0.001, 0.003, 0.01, 0.03, 0.1]
+    maes_lasso = []
+    rmses_lasso = []
+    non_zero_counts = []
+
+    for _alpha in _alphas:
+        model_lasso = Pipeline([("scaler", StandardScaler()), ("lasso", Lasso(_alpha))])
+
+        model_lasso.fit(X_train_raw_temporal_cycle, y_train)
+
+        y_pred_lasso = model_lasso.predict(X_validation_temporal_cycle)
+
+        mae_lasso = mean_absolute_error(y_validation, y_pred_lasso)
+
+        maes_lasso.append(mae_lasso)
+
+        rmse_lasso = root_mean_squared_error(y_validation, y_pred_lasso)
+
+        rmses_lasso.append(rmse_lasso)
+
+        n_not_zero_coef = 0
+
+        for _coef in model_lasso.named_steps["lasso"].coef_:
+            if _coef != 0:
+                n_not_zero_coef += 1
+
+        non_zero_counts.append(n_not_zero_coef)
+
+    pd.DataFrame(
+        {
+            "alpha": _alphas,
+            "MAE": maes_lasso,
+            "RMSE": rmses_lasso,
+            "features kept": non_zero_counts,
+        }
+    ).round(3)
+    return
+
+
+@app.cell
+def _(
+    Lasso,
+    Pipeline,
+    StandardScaler,
+    X_train_raw_temporal_cycle,
+    X_validation_temporal_cycle,
+    y_train,
+):
+    model_lasso_alpha_selected = Pipeline(
+        [("scaler", StandardScaler()), ("lasso", Lasso(alpha=0.03))]
+    )
+
+    model_lasso_alpha_selected.fit(X_train_raw_temporal_cycle, y_train)
+
+    coef_lasso = model_lasso_alpha_selected.named_steps["lasso"].coef_
+    coef_lasso
+    return (coef_lasso,)
+
+
+@app.cell
+def _(coef_lasso, pd, raw_temporal_cycle_features):
+    df_lasso_coefs = pd.DataFrame(
+        {"feature": raw_temporal_cycle_features, "coefficients": coef_lasso}
+    )
+
+    df_lasso_coefs[df_lasso_coefs["coefficients"] == 0]
+    return (df_lasso_coefs,)
+
+
+@app.cell
+def _(
+    LinearRegression,
+    Pipeline,
+    StandardScaler,
+    df_lasso_coefs,
+    df_train_temporal,
+    df_validation_temporal,
+    mean_absolute_error,
+    root_mean_squared_error,
+    y_train,
+    y_validation,
+):
+    non_zero_coefficients = df_lasso_coefs[df_lasso_coefs["coefficients"] != 0]
+    non_zero_features = non_zero_coefficients["feature"]
+
+    X_train_non_zero = df_train_temporal[non_zero_features]
+    X_validation_non_zero = df_validation_temporal[non_zero_features]
+
+    model_non_zero_features = Pipeline(
+        [("scaler", StandardScaler()), ("regressor", LinearRegression())]
+    )
+
+    model_non_zero_features.fit(X_train_non_zero, y_train)
+
+    y_pred_non_zero = model_non_zero_features.predict(X_validation_non_zero)
+
+    mae_non_zero = mean_absolute_error(y_validation, y_pred_non_zero)
+
+    rmse_non_zero = root_mean_squared_error(y_validation, y_pred_non_zero)
+
+    f"MAE : {mae_non_zero}, RMSE: {rmse_non_zero}"
+
     return
 
 

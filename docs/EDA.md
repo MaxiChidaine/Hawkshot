@@ -47,13 +47,14 @@ des visualisations permettant d’interpréter le résultat.
 
 ## 03_rul_target_and_features
 
-Question centrale : comment transformer les trajectoires en données adaptées à la prédiction de la RUL ?
+Comment transformer les trajectoires run-to-failure de FD001 en un jeu de données supervisé, exploitable pour prédire la RUL sans introduire de fuite d’information ?
 
 calcul de la RUL ;
 comparaison RUL linéaire / RUL plafonnée ;
 création des premières features ;
 préparation des jeux par moteur ;
 prévention des fuites de données.
+
 
 ## 04_baseline_models
 
@@ -73,4 +74,41 @@ erreurs selon la phase de vie ;
 importance des variables ;
 analyse des moteurs difficiles ;
 résultats finaux.
+
+Déroulement des expériences : 
+
+EXPÉRIENCE 0
+cycle only
+→ combien l'âge seul permet-il de prédire ?
+
+
+EXPÉRIENCE 1
+14 raw sensors
+→ baseline capteurs
+
+
+EXPÉRIENCE 2
+14 raw sensors + cycle
+→ valeur ajoutée de l'âge
+
+
+EXPÉRIENCE 3
+raw sensors + temporal features
+→ valeur ajoutée de la dynamique
+
+
+EXPÉRIENCE 4
+variation des fenêtres temporelles
+→ quelle quantité d'historique est utile ?
+
+
+EXPÉRIENCE 5
+sensor ablations
+→ contribution complémentaire de chaque capteur
+
+
+EXPÉRIENCE 6
+group ablations / feature subsets
+→ tester les hypothèses issues de l'EDA
+
 
