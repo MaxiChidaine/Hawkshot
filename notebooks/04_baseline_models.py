@@ -51,6 +51,12 @@ def _():
     from sklearn.preprocessing import StandardScaler
     from sklearn.pipeline import Pipeline
     from sklearn.linear_model import Ridge, Lasso
+    from sklearn.tree import DecisionTreeRegressor
+    from sklearn.ensemble import (
+        RandomForestRegressor,
+        ExtraTreesRegressor,
+        GradientBoostingRegressor,
+    )
 
     from hawkshot.data.cmapss import (
         SENSOR_COLUMNS,
@@ -67,9 +73,13 @@ def _():
         sensor for sensor in SENSOR_COLUMNS if sensor in df_filtered.columns
     ]
     return (
+        DecisionTreeRegressor,
+        ExtraTreesRegressor,
+        GradientBoostingRegressor,
         Lasso,
         LinearRegression,
         Pipeline,
+        RandomForestRegressor,
         Ridge,
         StandardScaler,
         add_temporal_features,
@@ -942,6 +952,223 @@ def _(mo):
 
     Interestingly, several discarded representations belong to `sensor_9` and `sensor_14`, the two sensors previously identified as having the most heterogeneous fleet-level degradation behaviour. This observation is consistent with the earlier EDA, although it does not establish that these sensors are intrinsically uninformative.
     """)
+    return
+
+
+@app.cell
+def _(
+    DecisionTreeRegressor,
+    X_train_raw_temporal_cycle,
+    X_validation_temporal_cycle,
+    mean_absolute_error,
+    root_mean_squared_error,
+    y_train,
+    y_validation,
+):
+    model_dt = DecisionTreeRegressor(max_depth=None, random_state=42)
+    model_dt.fit(X_train_raw_temporal_cycle, y_train)
+
+    y_pred_train_dt = model_dt.predict(X_train_raw_temporal_cycle)
+    y_pred_validation_dt = model_dt.predict(X_validation_temporal_cycle)
+
+    mae_train_dt = mean_absolute_error(y_train, y_pred_train_dt)
+    mae_validation_dt = mean_absolute_error(y_validation, y_pred_validation_dt)
+
+    rmse_train_dt = root_mean_squared_error(y_train, y_pred_train_dt)
+    rmse_validation_dt = root_mean_squared_error(y_validation, y_pred_validation_dt)
+
+    f"MAE_train : {mae_train_dt}, MAE_validation {mae_validation_dt}, RMSE_train : {rmse_train_dt}, RMSE_validation : {rmse_validation_dt}"
+    return
+
+
+@app.cell
+def _(
+    DecisionTreeRegressor,
+    X_train_raw_temporal_cycle,
+    X_validation_temporal_cycle,
+    mean_absolute_error,
+    pd,
+    root_mean_squared_error,
+    y_train,
+    y_validation,
+):
+    _depths = [2, 4, 6, 8, 10, 12, 15, 20, 25, 31]
+    n_leaves = []
+    maes_train_dt_multiple_depths = []
+    maes_validation_dt_multiple_depths = []
+    rmses_train_dt_multiple_depths = []
+    rmses_validation_dt_multiple_depths = []
+
+    for _depth in _depths:
+        model_dt_multiple_depths = DecisionTreeRegressor(
+            max_depth=_depth, random_state=42
+        )
+        model_dt_multiple_depths.fit(X_train_raw_temporal_cycle, y_train)
+
+        y_pred_train_dt_multiple_depths = model_dt_multiple_depths.predict(
+            X_train_raw_temporal_cycle
+        )
+        y_pred_validation_dt_multiple_depths = model_dt_multiple_depths.predict(
+            X_validation_temporal_cycle
+        )
+
+        mae_train_dt_multiple_depths = mean_absolute_error(
+            y_train, y_pred_train_dt_multiple_depths
+        )
+        mae_validation_dt_multiple_depths = mean_absolute_error(
+            y_validation, y_pred_validation_dt_multiple_depths
+        )
+
+        rmse_train_dt_multiple_depths = root_mean_squared_error(
+            y_train, y_pred_train_dt_multiple_depths
+        )
+        rmse_validation_dt_multiple_depths = root_mean_squared_error(
+            y_validation, y_pred_validation_dt_multiple_depths
+        )
+
+        maes_train_dt_multiple_depths.append(mae_train_dt_multiple_depths)
+        maes_validation_dt_multiple_depths.append(mae_validation_dt_multiple_depths)
+        rmses_train_dt_multiple_depths.append(rmse_train_dt_multiple_depths)
+        rmses_validation_dt_multiple_depths.append(rmse_validation_dt_multiple_depths)
+        n_leaves.append(model_dt_multiple_depths.get_n_leaves())
+
+    pd.DataFrame(
+        {
+            "depth": _depths,
+            "n_leaves": n_leaves,
+            "MAE_train": maes_train_dt_multiple_depths,
+            "MAE_validation": maes_validation_dt_multiple_depths,
+            "RMSE_train": rmses_train_dt_multiple_depths,
+            "RMSE_validation": rmses_validation_dt_multiple_depths,
+        }
+    ).round(3)
+    return
+
+
+@app.cell
+def _(
+    RandomForestRegressor,
+    X_train_raw_temporal_cycle,
+    X_validation_temporal_cycle,
+    mean_absolute_error,
+    root_mean_squared_error,
+    y_train,
+    y_validation,
+):
+    model_rf = RandomForestRegressor(
+        n_estimators=100, max_depth=10, random_state=42, n_jobs=-1
+    )
+
+    model_rf.fit(X_train_raw_temporal_cycle, y_train)
+
+    y_pred_train_rf = model_rf.predict(X_train_raw_temporal_cycle)
+    y_pred_validation_rf = model_rf.predict(X_validation_temporal_cycle)
+
+    mae_train_rf = mean_absolute_error(y_train, y_pred_train_rf)
+    mae_validation_rf = mean_absolute_error(y_validation, y_pred_validation_rf)
+
+    rmse_train_rf = root_mean_squared_error(y_train, y_pred_train_rf)
+    rmse_validation_rf = root_mean_squared_error(y_validation, y_pred_validation_rf)
+
+    f"MAE_train : {mae_train_rf}, MAE_validation {mae_validation_rf}, RMSE_train : {rmse_train_rf}, RMSE_validation : {rmse_validation_rf}"
+    return
+
+
+@app.cell
+def _(
+    ExtraTreesRegressor,
+    X_train_raw_temporal_cycle,
+    X_validation_temporal_cycle,
+    mean_absolute_error,
+    root_mean_squared_error,
+    y_train,
+    y_validation,
+):
+    model_et = ExtraTreesRegressor(
+        n_estimators=100, max_depth=10, random_state=42, n_jobs=-1
+    )
+
+    model_et.fit(X_train_raw_temporal_cycle, y_train)
+
+    y_pred_train_et = model_et.predict(X_train_raw_temporal_cycle)
+    y_pred_validation_et = model_et.predict(X_validation_temporal_cycle)
+
+    mae_train_et = mean_absolute_error(y_train, y_pred_train_et)
+    mae_validation_et = mean_absolute_error(y_validation, y_pred_validation_et)
+
+    rmse_train_et = root_mean_squared_error(y_train, y_pred_train_et)
+    rmse_validation_et = root_mean_squared_error(y_validation, y_pred_validation_et)
+
+    f"MAE_train : {mae_train_et}, MAE_validation {mae_validation_et}, RMSE_train : {rmse_train_et}, RMSE_validation : {rmse_validation_et}"
+    return
+
+
+@app.cell
+def _(
+    GradientBoostingRegressor,
+    X_train_raw_temporal_cycle,
+    X_validation_temporal_cycle,
+    mean_absolute_error,
+    pd,
+    root_mean_squared_error,
+    y_train,
+    y_validation,
+):
+    list_learning_rate = [0.03, 0.05, 0.1, 0.2]
+    list_n_estimators = [400, 200, 100, 50]
+    _max_depths = [1, 2, 3, 4, 5]
+
+    maes_train_gb = []
+    maes_validation_gb = []
+    rmses_train_gb = []
+    rmses_validation_gb = []
+    list_dataframe_learning_rate = []
+    list_dataframe_n_estimators = []
+    list_dataframe_depth = []
+
+    hyperparameters_couples = list(zip(list_learning_rate, list_n_estimators))
+
+    for _depth in _max_depths:
+        for _learning_rate, _n_estimators in hyperparameters_couples:
+            model_gb = GradientBoostingRegressor(
+                n_estimators=_n_estimators,
+                learning_rate=_learning_rate,
+                max_depth=_depth,
+            )
+
+            model_gb.fit(X_train_raw_temporal_cycle, y_train)
+
+            y_pred_train_gb = model_gb.predict(X_train_raw_temporal_cycle)
+            y_pred_validation_gb = model_gb.predict(X_validation_temporal_cycle)
+
+            mae_train_gb = mean_absolute_error(y_train, y_pred_train_gb)
+            mae_validation_gb = mean_absolute_error(y_validation, y_pred_validation_gb)
+
+            rmse_train_gb = root_mean_squared_error(y_train, y_pred_train_gb)
+            rmse_validation_gb = root_mean_squared_error(
+                y_validation, y_pred_validation_gb
+            )
+
+            maes_train_gb.append(mae_train_gb)
+            maes_validation_gb.append(mae_validation_gb)
+            rmses_train_gb.append(rmse_train_gb)
+            rmses_validation_gb.append(rmse_validation_gb)
+
+            list_dataframe_learning_rate.append(_learning_rate)
+            list_dataframe_n_estimators.append(_n_estimators)
+            list_dataframe_depth.append(_depth)
+
+    pd.DataFrame(
+        {
+            "depth": list_dataframe_depth,
+            "learning_rate": list_dataframe_learning_rate,
+            "n_estimators": list_dataframe_n_estimators,
+            "MAE_train": maes_train_gb,
+            "MAE_validation": maes_validation_gb,
+            "RMSE_train": rmses_train_gb,
+            "RMSE_validation": rmses_validation_gb,
+        }
+    )
     return
 
 
