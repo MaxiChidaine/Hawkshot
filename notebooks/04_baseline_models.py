@@ -57,6 +57,7 @@ def _():
         ExtraTreesRegressor,
         GradientBoostingRegressor,
     )
+    from sklearn.svm import SVR
 
     from hawkshot.data.cmapss import (
         SENSOR_COLUMNS,
@@ -81,6 +82,7 @@ def _():
         Pipeline,
         RandomForestRegressor,
         Ridge,
+        SVR,
         StandardScaler,
         add_temporal_features,
         available_sensors,
@@ -725,7 +727,7 @@ def _(
         rmses_ridge.append(rmse_ridge)
 
     pd.DataFrame({"alpha": _alphas, "MAE": maes_ridge, "RMSE": rmses_ridge}).round(3)
-    return (model_ridge,)
+    return mae_ridge, model_ridge, rmse_ridge
 
 
 @app.cell
@@ -787,9 +789,9 @@ def _(mo):
     mo.md(r"""
     Moderate Ridge regularisation reduces the overall magnitude of the coefficients without materially changing validation performance.
 
-    With `alpha=10`, the coefficient L2 norm decreases subtantially while MAE remains almost unchanged. At `alpha=1000`, coefficients are compressed much more strongly and predictive performance begins to deteriorate.
+    With `alpha=10`, the coefficient L2 norm decreases substantially while MAE remains almost unchanged. At `alpha=1000`, coefficients are compressed much more strongly and predictive performance begins to deteriorate.
 
-    Ridge therefore improves coefficient stability but provides little evidence of a meaningful predictive advantage over ordinary linear regression for the current feature set.
+    Ridge therefore substantially reduces coefficient magnitude but provides little evidence of a meaningful predictive advantage over ordinary linear regression for the current feature set.
     """)
     return
 
@@ -801,7 +803,7 @@ def _(mo):
 
     Lasso is evaluated next to determine whether redundant predictors can be removed while preserving predictive performance.
 
-    As `alpha` increases, stronger L1 regularisation is expected to drive an increasing number of coefficents exactly to zero.
+    As `alpha` increases, stronger L1 regularisation is expected to drive an increasing number of coefficients exactly to zero.
 
     The comparison therefore considers both predictive error and the number of active features.
     """)
@@ -827,7 +829,9 @@ def _(
     non_zero_counts = []
 
     for _alpha in _alphas:
-        model_lasso = Pipeline([("scaler", StandardScaler()), ("lasso", Lasso(_alpha))])
+        model_lasso = Pipeline(
+            [("scaler", StandardScaler()), ("lasso", Lasso(_alpha, max_iter=30000))]
+        )
 
         model_lasso.fit(X_train_raw_temporal_cycle, y_train)
 
@@ -857,7 +861,7 @@ def _(
             "features kept": non_zero_counts,
         }
     ).round(3)
-    return
+    return mae_lasso, rmse_lasso
 
 
 @app.cell
@@ -875,7 +879,7 @@ def _(mo):
 @app.cell
 def _(Lasso, Pipeline, StandardScaler, X_train_raw_temporal_cycle, y_train):
     model_lasso_alpha_selected = Pipeline(
-        [("scaler", StandardScaler()), ("lasso", Lasso(alpha=0.03))]
+        [("scaler", StandardScaler()), ("lasso", Lasso(alpha=0.03, max_iter=30000))]
     )
 
     model_lasso_alpha_selected.fit(X_train_raw_temporal_cycle, y_train)
@@ -903,7 +907,7 @@ def _(mo):
 
     A zero coefficient does not imply that the corresponding variable contains no information. Highly correlated representations of the same sensor behaviour may allow Lasso to retain one feature while discarding another.
 
-    The selected non-zero features are therefore tested separately using an ordinary linear regression rather than being permanently removed from the prepared dataset.
+    The selected non-zero features are therefore tested separately using an ordinary linear regression rather than being permanently removed from the prepared dataset
     """)
     return
 
@@ -940,7 +944,7 @@ def _(
     rmse_non_zero = root_mean_squared_error(y_validation, y_pred_non_zero)
 
     f"MAE : {mae_non_zero}, RMSE: {rmse_non_zero}"
-    return
+    return mae_non_zero, rmse_non_zero
 
 
 @app.cell
@@ -951,6 +955,34 @@ def _(mo):
     This suggests that the 25 removed predictors are largely redundant within the current linear modelling framework.
 
     Interestingly, several discarded representations belong to `sensor_9` and `sensor_14`, the two sensors previously identified as having the most heterogeneous fleet-level degradation behaviour. This observation is consistent with the earlier EDA, although it does not establish that these sensors are intrinsically uninformative.
+
+    Although the reduced feature set preserves linear-regression performance, the removed predictors are not permanently discarded. Nonlinear models may exploit interactions or alternative representations that are not useful with a linear framework. The complete raw, temporal and cycle feature set is therefore retained for the following baseline experiments.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 5. Tree-based baseline
+
+    The previous experiments showed that adding regularisation to the linear model provides little additional predictive improvement. This suggests that the remaining modelling error may partly result from relationships that cannot be represented by a linear combination of the available predictors.
+
+    Tree-based models are therefore evaluated using the complete raw, temporal and cycle feature set. Unlike the previous linear models, decision trees do not require feature standardisation because their predictions are based on threshold splits rather than feature magnitude.
+
+    The objective of this section is not to perform exhaustive hyperparameter optimisation, but to determine whether nonlinear tree-based models provide a meaningful improvement over the established linear baselines.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ### 5.1 Decision tree
+
+    A single decision tree is first evaluated to determine whether nonlinear relationships and interactions between predictors improve RUL estimation.
+
+    An unrestricted tree is trained initially to illustrate the effect of allowing the model to grow without regularisation.
     """)
     return
 
@@ -978,6 +1010,18 @@ def _(
     rmse_validation_dt = root_mean_squared_error(y_validation, y_pred_validation_dt)
 
     f"MAE_train : {mae_train_dt}, MAE_validation {mae_validation_dt}, RMSE_train : {rmse_train_dt}, RMSE_validation : {rmse_validation_dt}"
+    return mae_train_dt, mae_validation_dt, rmse_validation_dt
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    The unrestricted tree achieves zero training error but substantially worse validation performance, with a validation MAE of approximately 12.1 cycles and RMSE close to 19.6 cycles.
+
+    The tree reaches a depth of 31 and contains several thousand leaves, indicating that it has sufficient capacity to reproduce the training observations almost exactly. The large difference between training and validation performance is therefore a clear indication of overfitting.
+
+    Tree depth is consequently restricted in the following experiment to evaluate the trade-off between model complexity and generalisation.
+    """)
     return
 
 
@@ -1046,6 +1090,30 @@ def _(
 
 
 @app.cell
+def _(mo):
+    mo.md(r"""
+    Validation performance initially improves as tree depth increases, showing that the shallowest trees underfit the data. The best validation MAE in the explored range is obtained around a depth of 10, while deeper trees continue to reduce training error without improving validation performance.
+
+    Beyond this region, the growing train-validation gap indicates progressively stronger overfitting. A depth of 10 is therefore retained as a representative Decision tree baseline, achieving approximately 10.6 cycles MAE on the validation set.
+
+    Although this is already an improvement over the linear models, the relatively high validation RMSE indicates that the single tree still produces substantial large prediction errors.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ### 5.2 Random Forest
+
+    A Random Forest combines multiple decision trees trained on different bootstrap samples and random subsets of predictors. Their predictions are averaged, which generally reduces the variance and instability observed with a single decision tree.
+
+    A first representative configuration with 100 trees and a maximum depth of 10 is evaluated. Detailed hyperparameter tuning is intentionally deferred to the later model-selection stage.
+    """)
+    return
+
+
+@app.cell
 def _(
     RandomForestRegressor,
     X_train_raw_temporal_cycle,
@@ -1071,6 +1139,30 @@ def _(
     rmse_validation_rf = root_mean_squared_error(y_validation, y_pred_validation_rf)
 
     f"MAE_train : {mae_train_rf}, MAE_validation {mae_validation_rf}, RMSE_train : {rmse_train_rf}, RMSE_validation : {rmse_validation_rf}"
+    return mae_train_rf, mae_validation_rf, rmse_validation_rf
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    Random Forest substantially improves over the single Decision Tree, reducing validation MAE from approximately 10.6 to 8.8 cycles and RMSE from 16.7 to 13.3 cycles.
+
+    Training error remains lower than validation error, indicating some degree of overfitting, but the validation improvement confirms that averaging multiple trees considerably improves generalisation.
+
+    Random Forest therefore represents the first nonlinear model family to clearly outperform all previous linear baselines.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ### 5.3 Extra Trees
+
+    Extra Trees follows a similar ensemble principle to Random Forest but introduces additional randomness when selecting split thresholds. This stronger randomisation can further decorrelate the individual trees and reduce ensemble variance.
+
+    To allow a direct comparison, the same number of trees and maximum depth used for the Random Forest baseline are retained.
+    """)
     return
 
 
@@ -1100,6 +1192,33 @@ def _(
     rmse_validation_et = root_mean_squared_error(y_validation, y_pred_validation_et)
 
     f"MAE_train : {mae_train_et}, MAE_validation {mae_validation_et}, RMSE_train : {rmse_train_et}, RMSE_validation : {rmse_validation_et}"
+    return mae_train_et, mae_validation_et, rmse_validation_et
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    Extra Trees achieves a validation MAE of approximately 8.7 cycles and an RMSE of 12.9 cycles, slightly improving over Random Forest on both metrics.
+
+    Its training error is also higher than that of Random Forest while validation performance is slightly better, suggesting that the additional randomisation is consistent with reduced overfitting without sacrificing predictive accuracy..
+
+    Extra Trees therefore becomes one of the strongest baseline candidates identified so far.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ### 5.4 Gradient Boosting
+
+    Random Forest and Extra Trees reduce prediction variance by averaging independently constructed trees. Gradient Boosting follows a different strategy. Trees are added sequentially, with each new tree attempting to correct errors left by the current ensemble.
+
+    Three parameters are explored at a coarse level:
+    - tree depth, controlling the complexity of each individual learner,
+    - learning rate, controlling the contribution of each new tree,
+    - number of estimators, controlling the number of sequential correction stages.
+    """)
     return
 
 
@@ -1134,6 +1253,7 @@ def _(
                 n_estimators=_n_estimators,
                 learning_rate=_learning_rate,
                 max_depth=_depth,
+                random_state=42,
             )
 
             model_gb.fit(X_train_raw_temporal_cycle, y_train)
@@ -1168,7 +1288,410 @@ def _(
             "RMSE_train": rmses_train_gb,
             "RMSE_validation": rmses_validation_gb,
         }
+    ).round(3)
+    return mae_train_gb, mae_validation_gb, rmse_validation_gb
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    Gradient Boosting provides another substantial improvement over the linear and single-tree baselines.
+
+    Across the explored configurations, lower learning rates combined with a larger number of estimators generally provide stronger validation performance. Increasing tree depth improves MAE up to the deepest values explored, but also progressively increases the difference between training and validation error.
+
+    The lowest validation MAE is obtained with a maximum depth of 5, learning rate of 0.03 and 400 estimators, reaching approximately 8.67 cycles. However, slightly shallower configurations achieve comparable RMSE with a smaller train-validation gap.
+
+    These results show that Gradient Boosting is highly competitive with Extra Trees, but they do not justify selecting a final configuration yet. More systematic model selection using group-based cross-validation is deferred to the next notebook.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 6. Support Vector Regression
+
+    The final baseline family considered in this notebook is Support Vector Regression with a radial basis function (RBF) kernel.
+
+    Unlike the tree-based approaches, RBF SVR models nonlinear relationships through similarities between observations in feature space. Because these similarities depend on distances between predictors, feature standardisation is required and is therefore included within a pipeline.
+
+    Three hyperparameters primarily control the behaviour of the model: `epsilon`, which defines the width of the error-insensitive region. `C`, which controls the penalty applied to prediction errors outside this region. `gamma`, which controls the locality of the RBF kernel.
+
+    To limit computational cost and preserve the exploratory objective of this notebook, `gamma='scale'` is retained while `epsilon` and `C` are examined separately.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ### 6.1 Epsilon sensitivity
+
+    The regularisation parameter `C` is initially fixed at 10 while several values of `epsilon` are compared. Smaller values impose a narrower tolerance around the regression function, whereas larger values allow greater prediction deviations before contributing to the optimisation objective.
+    """)
+    return
+
+
+@app.cell
+def _(
+    Pipeline,
+    SVR,
+    StandardScaler,
+    X_train_raw_temporal_cycle,
+    X_validation_temporal_cycle,
+    mean_absolute_error,
+    pd,
+    root_mean_squared_error,
+    y_train,
+    y_validation,
+):
+    list_epsilons = [0.1, 0.5, 1]
+
+    _maes_SVR_train = []
+    _maes_SVR_validation = []
+    _rmses_SVR_train = []
+    _rmses_SVR_validation = []
+
+    for epsilons in list_epsilons:
+        _model_SVR = Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                ("svr", SVR(kernel="rbf", C=10, epsilon=epsilons, gamma="scale")),
+            ]
+        )
+
+        _model_SVR.fit(X_train_raw_temporal_cycle, y_train)
+
+        _y_pred_train_SVR = _model_SVR.predict(X_train_raw_temporal_cycle)
+        _y_pred_validation_SVR = _model_SVR.predict(X_validation_temporal_cycle)
+
+        _mae_SVR_train = mean_absolute_error(y_train, _y_pred_train_SVR)
+        _mae_SVR_validation = mean_absolute_error(y_validation, _y_pred_validation_SVR)
+
+        _rmse_SVR_train = root_mean_squared_error(y_train, _y_pred_train_SVR)
+        _rmse_SVR_validation = root_mean_squared_error(
+            y_validation, _y_pred_validation_SVR
+        )
+
+        _maes_SVR_train.append(_mae_SVR_train)
+        _maes_SVR_validation.append(_mae_SVR_validation)
+
+        _rmses_SVR_train.append(_rmse_SVR_train)
+        _rmses_SVR_validation.append(_rmse_SVR_validation)
+
+    pd.DataFrame(
+        {
+            "epsilon": list_epsilons,
+            "mae_train": _maes_SVR_train,
+            "mae_validation": _maes_SVR_validation,
+            "rmse_train": _rmses_SVR_train,
+            "rmse_validation": _rmses_SVR_validation,
+        }
     )
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    Validation MAE changes relatively little between `epsilon=0.1`, `0.5` and `1`, while RMSE is lowest around `epsilon=0.5`.
+
+    The very small MAE advantage obtained with `epsilon=0.1` is not accompanied by an improvement in RMSE, suggesting slightly larger extreme errors. An exploratory value of `epsilon=0.5` is therefore retained as a balanced compromise for the following comparison of `C`.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ### 6.2 Regularisation strength
+
+    With `epsilon=0.5` fixed, the penalty parameter `C` is varied across several orders of magnitude.
+
+    A low value of `C` allows larger deviations from the training observations and therefore produces stronger effective regularisation. Increasing `C` penalises these deviations more strongly and allows the model to fit the training data more closely.
+    """)
+    return
+
+
+@app.cell
+def _(
+    Pipeline,
+    SVR,
+    StandardScaler,
+    X_train_raw_temporal_cycle,
+    X_validation_temporal_cycle,
+    mean_absolute_error,
+    pd,
+    root_mean_squared_error,
+    y_train,
+    y_validation,
+):
+    list_C = [1, 10, 100]
+
+    _maes_SVR_train = []
+    _maes_SVR_validation = []
+    _rmses_SVR_train = []
+    _rmses_SVR_validation = []
+
+    for c in list_C:
+        _model_SVR = Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                ("svr", SVR(kernel="rbf", C=c, epsilon=0.5, gamma="scale")),
+            ]
+        )
+
+        _model_SVR.fit(X_train_raw_temporal_cycle, y_train)
+
+        _y_pred_train_SVR = _model_SVR.predict(X_train_raw_temporal_cycle)
+        _y_pred_validation_SVR = _model_SVR.predict(X_validation_temporal_cycle)
+
+        _mae_SVR_train = mean_absolute_error(y_train, _y_pred_train_SVR)
+        _mae_SVR_validation = mean_absolute_error(y_validation, _y_pred_validation_SVR)
+
+        _rmse_SVR_train = root_mean_squared_error(y_train, _y_pred_train_SVR)
+        _rmse_SVR_validation = root_mean_squared_error(
+            y_validation, _y_pred_validation_SVR
+        )
+
+        _maes_SVR_train.append(_mae_SVR_train)
+        _maes_SVR_validation.append(_mae_SVR_validation)
+
+        _rmses_SVR_train.append(_rmse_SVR_train)
+        _rmses_SVR_validation.append(_rmse_SVR_validation)
+
+    pd.DataFrame(
+        {
+            "C": list_C,
+            "mae_train": _maes_SVR_train,
+            "mae_validation": _maes_SVR_validation,
+            "rmse_train": _rmses_SVR_train,
+            "rmse_validation": _rmses_SVR_validation,
+        }
+    )
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    The effect of `C` is clearly visible. With `C=1`, both training and validation errors remain relatively high, indicating underfitting. Increasing the parameter to `C=10` substantially improves both datasets and produces closely matched training and validation performance.
+
+    At `C=100`, training MAE falls sharply to approximately 5.6 cycles while validation MAE deteriorates to approximately 9.8 cycles. The widening gap indicates that the additional flexibility primarily improves the fit to the training observations rather than generalisation.
+
+    The exploratory configuration `C=10`,`epsilon=0.5`, and `gamma='scale'` therefore provides the strongest compromise, reaching approximately 9.54 cycles validation MAE and 13.36 cycles RMSE.
+
+    SVR clearly outperforms the linear models and the single Decision Tree, although it remains behind the strongest tree ensembles in the current experiments.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 7. Baseline model comparison
+
+    The representative results from all model families are gathered below. For models where several exploratory configurations were evaluated, a single representative configuration is retained based primarily on validation MAE, while RMSE and train-validation behaviour are used as complementary indicators.
+
+    The purpose of this comparison is to identify promising model families for subsequent cross-validated model selection rather than to declare a final model from the fixed validation split.
+    """)
+    return
+
+
+@app.cell
+def _(
+    mae_baseline_mean,
+    mae_baseline_median,
+    mae_cycle_only,
+    mae_lasso,
+    mae_non_zero,
+    mae_raw_sensors,
+    mae_raw_temporal,
+    mae_raw_temporal_cycle,
+    mae_ridge,
+    mae_sensors_cycle,
+    mae_train_dt,
+    mae_train_et,
+    mae_train_gb,
+    mae_train_rf,
+    mae_validation_dt,
+    mae_validation_et,
+    mae_validation_gb,
+    mae_validation_rf,
+    pd,
+    rmse_baseline_mean,
+    rmse_baseline_median,
+    rmse_cycle_only,
+    rmse_lasso,
+    rmse_non_zero,
+    rmse_raw_sensors,
+    rmse_raw_temporal,
+    rmse_raw_temporal_cycle,
+    rmse_ridge,
+    rmse_sensors_cycle,
+    rmse_validation_dt,
+    rmse_validation_et,
+    rmse_validation_gb,
+    rmse_validation_rf,
+):
+    baseline_results = [
+        {
+            "model": "Constant median",
+            "feature": "None",
+            "configuration": "median = 103",
+            "mae_train": "---",
+            "mae_validation": mae_baseline_median,
+            "rmse_validation": rmse_baseline_median,
+        },
+        {
+            "model": "Constant mean",
+            "feature": "None",
+            "configuration": "mean = 86.96",
+            "mae_train": "---",
+            "mae_validation": mae_baseline_mean,
+            "rmse_validation": rmse_baseline_mean,
+        },
+        {
+            "model": "Linear Regression",
+            "feature": "Cycle only",
+            "configuration": "---",
+            "mae_train": "---",
+            "mae_validation": mae_cycle_only,
+            "rmse_validation": rmse_cycle_only,
+        },
+        {
+            "model": "Linear Regression",
+            "feature": "Raw sensors",
+            "configuration": "---",
+            "mae_train": "---",
+            "mae_validation": mae_raw_sensors,
+            "rmse_validation": rmse_raw_sensors,
+        },
+        {
+            "model": "Linear Regression",
+            "feature": "Raw + cycle",
+            "configuration": "---",
+            "mae_train": "---",
+            "mae_validation": mae_sensors_cycle,
+            "rmse_validation": rmse_sensors_cycle,
+        },
+        {
+            "model": "Linear Regression",
+            "feature": "Raw + temporal",
+            "configuration": "---",
+            "mae_train": "---",
+            "mae_validation": mae_raw_temporal,
+            "rmse_validation": rmse_raw_temporal,
+        },
+        {
+            "model": "Linear Regression",
+            "feature": "Raw + temporal + cycle",
+            "configuration": "---",
+            "mae_train": "---",
+            "mae_validation": mae_raw_temporal_cycle,
+            "rmse_validation": rmse_raw_temporal_cycle,
+        },
+        {
+            "model": "Ridge",
+            "feature": "Raw + temporal + cycle",
+            "configuration": "α = 10",
+            "mae_train": "---",
+            "mae_validation": mae_ridge,
+            "rmse_validation": rmse_ridge,
+        },
+        {
+            "model": "Lasso",
+            "feature": "Raw + temporal + cycle",
+            "configuration": "α = 0.03",
+            "mae_train": "---",
+            "mae_validation": mae_lasso,
+            "rmse_validation": rmse_lasso,
+        },
+        {
+            "model": "Linear Regression",
+            "feature": "Lasso-selected features",
+            "configuration": "88 features",
+            "mae_train": "---",
+            "mae_validation": mae_non_zero,
+            "rmse_validation": rmse_non_zero,
+        },
+        {
+            "model": "Decision Tree",
+            "feature": "Raw + temporal + cycle",
+            "configuration": "depth = 10",
+            "mae_train": mae_train_dt,
+            "mae_validation": mae_validation_dt,
+            "rmse_validation": rmse_validation_dt,
+        },
+        {
+            "model": "Random Forest",
+            "feature": "Raw + temporal + cycle",
+            "configuration": "depth = 10, 100 trees",
+            "mae_train": mae_train_rf,
+            "mae_validation": mae_validation_rf,
+            "rmse_validation": rmse_validation_rf,
+        },
+        {
+            "model": "Extra Trees",
+            "feature": "Raw + temporal + cycle",
+            "configuration": "depth = 10, 100 trees",
+            "mae_train": mae_train_et,
+            "mae_validation": mae_validation_et,
+            "rmse_validation": rmse_validation_et,
+        },
+        {
+            "model": "Gradient Boosting",
+            "feature": "Raw + temporal + cycle",
+            "configuration": "depth = 5, lr = 0.03, 400 trees",
+            "mae_train": mae_train_gb,
+            "mae_validation": mae_validation_gb,
+            "rmse_validation": rmse_validation_gb,
+        },
+        {
+            "model": "SVR RBF",
+            "feature": "Raw + temporal + cycle",
+            "configuration": "C = 10, ε = 0.5",
+            "mae_train": 9.27,
+            "mae_validation": 9.54,
+            "rmse_validation": 13.36,
+        },
+    ]
+
+    pd.DataFrame(baseline_results)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    The progression across experiments reveals two main findings.
+
+    First, feature engineering provides substantial gains even within a simple linear model. Moving from operating cycle alone to raw sensor measurements, temporal features, and operating age progressively reduces validation MAE from approximately 20.5 to 12.9 cycles. This confirms that engine age, instantaneous condition, and recent sensor dynamics carry complementary predictive information.
+
+    Second, model nonlinearity provides an additional major improvement. Regularised linear models remain close to the ordinary linear-regression baseline, whereas ensemble tree methods reduce validation MAE to approximately 8.7-8.8 cycles. SVR also benefits from nonlinear modelling but remains moderately behind the strongest ensembles.
+
+    Gradient Boosting achieves the lowest validation MAE in the current exploratory experiments, while Extra Trees obtains an almost identical MAE and a slightly lower RMSE. Random Forest also remains competitive. The differences between these ensemble methods are sufficiently small that selecting a final model from this single validation split would be premature.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 8. Conclusions and models retained for further study
+
+    This notebook established a sequence of increasingly expressive RUL prediction baselines on FD001 while preserving the same engine-level train/validation split and leaving the official test set untouched.
+
+    The experiments first confirmed the value of the engineered feature representation. Raw sensor measurements outperform operating cycle alone, temporal features provide additional predictive information, and the strongest linear set combines raw sensors, temporal dynamics and absolute operating age.
+
+    Ridge regularisation reduces coefficient magnitude without providing a meaningful predictive gain, while Lasso demonstrates that a subset of predictors can be removed with almost no loss in linear-regression performance. This suggests substantial redundancy among the engineered features but does not justify permanently removing them before nonlinear modelling.
+
+    Nonlinear models provide the largest performance improvement. A single Decision Tree improves over the linear baselines but exhibits substantial overfitting as depth increases. Random Forest and Extra Trees significantly reduce validation error through ensemble averaging, while Gradient Boosting reaches the strongest MAE observed in this notebook. RBF SVR also provides competitive nonlinear performance, although it remains behind the strongest tree ensembles.
+
+    Based on these results, Gradient Boosting, Extra Trees and Random Forest are retained as the primary candidates for systematic model selection. SVR may also be retained as a secondary candidate because it represents a substantially different nonlinear modelling approach.
+
+    The next notebook will replace the single validation comparison with group-based cross-validation, ensuring that complete engines remain isolated between folds. Hyperparameter optimisation, temporal-window comparison, sensor and feature-group ablations, and final feature selection will then be performed before any evaluation on the official FD001 test set.
+    """)
     return
 
 
