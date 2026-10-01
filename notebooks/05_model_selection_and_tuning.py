@@ -11,6 +11,8 @@ def _():
     import numpy as np
     import winsound
 
+    from pathlib import Path
+    from sklearn.model_selection import ParameterGrid
     from sklearn.base import clone
     from sklearn.model_selection import train_test_split, GroupKFold, GridSearchCV
     from sklearn.pipeline import Pipeline
@@ -32,23 +34,31 @@ def _():
 
     from time import perf_counter
 
+    from itertools import product
+
     df_raw = load_fd001("data/raw/cmapss")
     df_filtered, removed_sensors = filter_constant_sensors(df_raw)
 
     available_sensors = [
         sensor for sensor in SENSOR_COLUMNS if sensor in df_filtered.columns
     ]
+
+    checkpoint_dir = Path("results/gb_tuning_b2")
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     return (
         ExtraTreesRegressor,
         GradientBoostingRegressor,
         GridSearchCV,
         GroupKFold,
+        ParameterGrid,
+        Path,
         Pipeline,
         RandomForestRegressor,
         SVR,
         StandardScaler,
         add_temporal_features,
         available_sensors,
+        checkpoint_dir,
         clone,
         df_filtered,
         mean_absolute_error,
@@ -56,6 +66,7 @@ def _():
         np,
         pd,
         perf_counter,
+        product,
         root_mean_squared_error,
         train_test_split,
         winsound,
@@ -136,21 +147,9 @@ def _():
 
 
 @app.cell
-def _(
-    add_temporal_features,
-    available_sensors,
-    df_train,
-    df_validation,
-    temporal_config,
-):
+def _(add_temporal_features, available_sensors, df_train, temporal_config):
     df_train_temporal = add_temporal_features(
         df_train,
-        available_sensors,
-        temporal_config,
-    )
-
-    df_validation_temporal = add_temporal_features(
-        df_validation,
         available_sensors,
         temporal_config,
     )
@@ -166,11 +165,7 @@ def _(
         *available_sensors,
         *temporal_features,
     ]
-    return (
-        df_train_temporal,
-        df_validation_temporal,
-        raw_temporal_cycle_features,
-    )
+    return df_train_temporal, raw_temporal_cycle_features
 
 
 @app.cell
@@ -180,6 +175,9 @@ def _(clone, mean_absolute_error, np, perf_counter, root_mean_squared_error):
         rmses = []
         fit_times = []
         predict_times = []
+        mean_signed_errors = []
+        overestimation_rates = []
+        mean_overestimationss = []
 
         for train_index, validation_index in cv.split(X, y, groups=groups):
             X_train_fold = X.iloc[train_index]
@@ -201,6 +199,16 @@ def _(clone, mean_absolute_error, np, perf_counter, root_mean_squared_error):
             maes.append(mean_absolute_error(y_validation_fold, y_pred))
             rmses.append(root_mean_squared_error(y_validation_fold, y_pred))
 
+            error = y_pred - y_validation_fold
+
+            positive_errors = error[error > 0]
+
+            overestimation_rates.append((error > 0).mean())
+            mean_signed_errors.append(error.mean())
+            mean_overestimationss.append(
+                positive_errors.mean() if len(positive_errors) > 0 else 0.0
+            )
+
         return {
             "mean_MAE": np.mean(maes),
             "std_MAE": np.std(maes),
@@ -208,6 +216,9 @@ def _(clone, mean_absolute_error, np, perf_counter, root_mean_squared_error):
             "std_RMSE": np.std(rmses),
             "mean_fit_time": np.mean(fit_times),
             "mean_predict_time": np.mean(predict_times),
+            "overestimation_rate": np.mean(overestimation_rates),
+            "mean_signed_error": np.mean(mean_signed_errors),
+            "mean_overestimation": np.mean(mean_overestimationss),
         }
 
     return (evaluate_grouped_cv,)
@@ -236,14 +247,86 @@ def _(GridSearchCV):
 
 
 @app.cell
+def _(mean_absolute_error, perf_counter, root_mean_squared_error):
+    def evaluate_model(model, X_train, X_validation, y_train, y_validation):
+        fit_start = perf_counter()
+        model.fit(X_train, y_train)
+        fit_time = perf_counter() - fit_start
+
+        predict_train_start = perf_counter()
+        y_pred_train = model.predict(X_train)
+        predict_train_time = perf_counter() - predict_train_start
+
+        predict_validation_start = perf_counter()
+        y_pred_validation = model.predict(X_validation)
+        predict_validation_time = perf_counter() - predict_validation_start
+
+        mae_train = mean_absolute_error(y_train, y_pred_train)
+        mae_validation = mean_absolute_error(y_validation, y_pred_validation)
+
+        rmse_train = root_mean_squared_error(y_train, y_pred_train)
+        rmse_validation = root_mean_squared_error(y_validation, y_pred_validation)
+
+        return {
+            "mae_train": mae_train,
+            "mae_validation": mae_validation,
+            "rmse_train": rmse_train,
+            "rmse_validation": rmse_validation,
+            "fit_time": fit_time,
+            "predict_train_time": predict_train_time,
+            "predict_validation_time": predict_validation_time,
+            "y_pred_validation": y_pred_validation,
+        }
+
+    return (evaluate_model,)
+
+
+@app.cell
+def _(np):
+    from sklearn.metrics import make_scorer
+
+    def overestimation_rate(y_true, y_pred):
+        return (y_pred > y_true).mean()
+
+    def mean_signed_error_scorer(estimator, X, y_true):
+        y_pred = estimator.predict(X)
+
+        return float(np.mean(y_pred - np.asarray(y_true)))
+
+    def mean_overestimation(y_true, y_pred):
+        error = y_pred - y_true
+        positive_errors = error[error > 0]
+
+        if len(positive_errors) == 0:
+            return 0.0
+
+        return positive_errors.mean()
+
+    scoring = {
+        "MAE": "neg_mean_absolute_error",
+        "RMSE": "neg_root_mean_squared_error",
+        "overestimation_rate": make_scorer(
+            overestimation_rate,
+            greater_is_better=False,
+        ),
+        "mean_signed_error": mean_signed_error_scorer,
+        "mean_overestimation": make_scorer(
+            mean_overestimation,
+            greater_is_better=False,
+        ),
+    }
+    return (scoring,)
+
+
+@app.cell
 def _(GroupKFold, df_train_temporal, np, pd, raw_temporal_cycle_features):
     cv = GroupKFold(n_splits=5)
 
-    groups_fold = df_train_temporal["engine_id"]
-    X_fold = df_train_temporal[raw_temporal_cycle_features]
-    y_fold = df_train_temporal["rul_capped"]
+    groups_cv = df_train_temporal["engine_id"]
+    X_cv_full = df_train_temporal[raw_temporal_cycle_features]
+    y_cv = df_train_temporal["rul_capped"]
 
-    folds = list(cv.split(X_fold, y_fold, groups_fold))
+    folds = list(cv.split(X_cv_full, y_cv, groups_cv))
 
     length_train_fold = []
     length_validation_fold = []
@@ -251,8 +334,8 @@ def _(GroupKFold, df_train_temporal, np, pd, raw_temporal_cycle_features):
     list_fold = []
 
     for _fold_number, (_train_index, __validation_index) in enumerate(folds, start=1):
-        train_engines_fold = groups_fold.iloc[_train_index].unique()
-        validation_engines_fold = groups_fold.iloc[__validation_index].unique()
+        train_engines_fold = groups_cv.iloc[_train_index].unique()
+        validation_engines_fold = groups_cv.iloc[__validation_index].unique()
         intersection = np.intersect1d(train_engines_fold, validation_engines_fold)
 
         length_train_fold.append(len(train_engines_fold))
@@ -268,17 +351,35 @@ def _(GroupKFold, df_train_temporal, np, pd, raw_temporal_cycle_features):
             "common_engines": list_intersection,
         }
     )
-    return X_fold, cv, groups_fold, y_fold
+    return X_cv_full, cv, groups_cv, y_cv
+
+
+@app.cell
+def _():
+    CV_results_comparison = []
+
+    columns_to_display = [
+        "model",
+        "mean_MAE",
+        "std_MAE",
+        "mean_RMSE",
+        "std_RMSE",
+        "overestimation_rate",
+        "mean_signed_error",
+        "mean_overestimation",
+    ]
+    return CV_results_comparison, columns_to_display
 
 
 @app.cell
 def _(
+    CV_results_comparison,
     ExtraTreesRegressor,
-    X_fold,
+    X_cv_full,
     cv,
     evaluate_grouped_cv,
-    groups_fold,
-    y_fold,
+    groups_cv,
+    y_cv,
 ):
     model_et = ExtraTreesRegressor(
         n_estimators=100,
@@ -289,80 +390,31 @@ def _(
 
     results_et = evaluate_grouped_cv(
         model=model_et,
-        X=X_fold,
-        y=y_fold,
-        groups=groups_fold,
+        X=X_cv_full,
+        y=y_cv,
+        groups=groups_cv,
         cv=cv,
     )
 
-    results_et
-    return model_et, results_et
-
-
-@app.cell
-def _(mo):
-    mo.md(r"""
-    The Extra Tree baseline shows relatively stable performance across the five engine-level folds. Four folds produce very similar errors, while the third fold is moderately more difficult, leading to a mean validation MAE of approximately 10.62 cycles with a standard deviation of 0.27 cycles.
-    """)
+    CV_results_comparison.append(
+        {
+            "model": "model_et",
+            **results_et,
+        }
+    )
     return
 
 
 @app.cell
 def _(
-    ExtraTreesRegressor,
-    X_fold,
-    cv,
-    groups_fold,
-    notify_done,
-    run_grouped_grid_search,
-    y_fold,
-):
-    param_grid_et = {
-        "max_depth": [14, 16, 18],
-        "min_samples_leaf": [2, 4, 6],
-    }
-
-    model_et_GS = ExtraTreesRegressor(
-        n_estimators=100, random_state=42, min_samples_leaf=1.0
-    )
-
-    grid_et = run_grouped_grid_search(
-        model=model_et_GS,
-        param_grid=param_grid_et,
-        X=X_fold,
-        y=y_fold,
-        groups=groups_fold,
-        cv=cv,
-    )
-
-    notify_done()
-
-    grid_et.best_params_
-    return grid_et
-
-
-@app.cell
-def _(grid_et):
-    -grid_et.best_score_
-    return
-
-
-@app.cell
-def _(grid_et):
-    grid_et.best_estimator_
-    return
-
-
-@app.cell
-def _(
+    CV_results_comparison,
     RandomForestRegressor,
-    X_fold,
+    X_cv_full,
     cv,
     evaluate_grouped_cv,
-    groups_fold,
-    model_et,
+    groups_cv,
     notify_done,
-    y_fold,
+    y_cv,
 ):
     model_rf = RandomForestRegressor(
         n_estimators=100,
@@ -373,27 +425,33 @@ def _(
 
     results_rf = evaluate_grouped_cv(
         model=model_rf,
-        X=X_fold,
-        y=y_fold,
-        groups=groups_fold,
+        X=X_cv_full,
+        y=y_cv,
+        groups=groups_cv,
         cv=cv,
     )
 
     notify_done()
 
-    results_rf
-    return (results_rf,)
+    CV_results_comparison.append(
+        {
+            "model": "model_rf",
+            **results_rf,
+        }
+    )
+    return
 
 
 @app.cell
 def _(
+    CV_results_comparison,
     GradientBoostingRegressor,
-    X_fold,
+    X_cv_full,
     cv,
     evaluate_grouped_cv,
-    groups_fold,
+    groups_cv,
     notify_done,
-    y_fold,
+    y_cv,
 ):
     model_gb = GradientBoostingRegressor(
         n_estimators=300,
@@ -405,29 +463,35 @@ def _(
 
     results_gb = evaluate_grouped_cv(
         model=model_gb,
-        X=X_fold,
-        y=y_fold,
-        groups=groups_fold,
+        X=X_cv_full,
+        y=y_cv,
+        groups=groups_cv,
         cv=cv,
     )
 
     notify_done()
 
-    results_gb
-    return (results_gb,)
+    CV_results_comparison.append(
+        {
+            "model": "model_gb",
+            **results_gb,
+        }
+    )
+    return
 
 
 @app.cell
 def _(
+    CV_results_comparison,
     Pipeline,
     SVR,
     StandardScaler,
-    X_fold,
+    X_cv_full,
     cv,
     evaluate_grouped_cv,
-    groups_fold,
+    groups_cv,
     notify_done,
-    y_fold,
+    y_cv,
 ):
     model_SVR = Pipeline(
         [
@@ -438,968 +502,1481 @@ def _(
 
     results_SVR = evaluate_grouped_cv(
         model=model_SVR,
-        X=X_fold,
-        y=y_fold,
-        groups=groups_fold,
+        X=X_cv_full,
+        y=y_cv,
+        groups=groups_cv,
         cv=cv,
     )
 
     notify_done()
 
-    results_SVR
-    return (results_SVR,)
+    CV_results_comparison.append(
+        {
+            "model": "model_SVR",
+            **results_SVR,
+        }
+    )
+    return
 
 
 @app.cell
-def _(pd, results_SVR, results_et, results_gb, results_rf):
-    CV_results_comparison = [
-        {
-            "Model": ["Gradient Boosting", "Random Forest", "Extra Trees", "SVR"],
-            "mean_MAE": [
-                results_gb["mean_MAE"],
-                results_rf["mean_MAE"],
-                results_et["mean_MAE"],
-                results_SVR["mean_MAE"],
-            ],
-            "std_MAE": [
-                results_gb["std_MAE"],
-                results_rf["std_MAE"],
-                results_et["std_MAE"],
-                results_SVR["std_MAE"],
-            ],
-            "mean_RMSE": [
-                results_gb["mean_RMSE"],
-                results_rf["mean_RMSE"],
-                results_et["mean_RMSE"],
-                results_SVR["mean_RMSE"],
-            ],
-            "std_RMSE": [
-                results_gb["std_RMSE"],
-                results_rf["std_RMSE"],
-                results_et["std_RMSE"],
-                results_SVR["std_RMSE"],
-            ],
-        }
-    ]
+def _(CV_results_comparison, columns_to_display, pd):
+    pd.DataFrame(CV_results_comparison).sort_values("overestimation_rate")[
+        columns_to_display
+    ].round(3)
+    return
 
-    pd.DataFrame(CV_results_comparison).round(3)
+
+@app.cell
+def _(available_sensors, raw_temporal_cycle_features):
+    feature_sets = {
+        "full": raw_temporal_cycle_features,
+        "no_means": [c for c in raw_temporal_cycle_features if "_mean_" not in c],
+        "no_deltas": [c for c in raw_temporal_cycle_features if "_delta_" not in c],
+        "no_slopes": [c for c in raw_temporal_cycle_features if "_slope_" not in c],
+        "no_means_no_deltas": [
+            c
+            for c in raw_temporal_cycle_features
+            if "_mean_" not in c and "_delta_" not in c
+        ],
+        "no_means_no_raw": [
+            c
+            for c in raw_temporal_cycle_features
+            if "_mean_" not in c and c not in available_sensors
+        ],
+    }
+    return (feature_sets,)
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    # GRADIENT BOOSTING
+    """)
     return
 
 
 @app.cell
 def _(
     GradientBoostingRegressor,
-    X_fold,
+    X_cv_full,
     cv,
-    groups_fold,
+    groups_cv,
     notify_done,
     run_grouped_grid_search,
-    y_fold,
+    y_cv,
 ):
-    param_grid_gb = [
+    param_grid_gb_coarse = [
         {
-            "learning_rate": [0.04],
-            "n_estimators": [300],
-        },
-        {
-            "learning_rate": [0.03],
-            "n_estimators": [400],
+            "learning_rate": [0.015],
+            "n_estimators": [800],
+            "max_depth": [3, 5, 7],
+            "min_samples_leaf": [2, 5, 10],
         },
         {
             "learning_rate": [0.02],
             "n_estimators": [600],
+            "max_depth": [3, 5, 7],
+            "min_samples_leaf": [2, 5, 10],
+        },
+        {
+            "learning_rate": [0.03],
+            "n_estimators": [400],
+            "max_depth": [3, 5, 7],
+            "min_samples_leaf": [2, 5, 10],
+        },
+        {
+            "learning_rate": [0.04],
+            "n_estimators": [300],
+            "max_depth": [3, 5, 7],
+            "min_samples_leaf": [2, 5, 10],
+        },
+        {
+            "learning_rate": [0.06],
+            "n_estimators": [200],
+            "max_depth": [3, 5, 7],
+            "min_samples_leaf": [2, 5, 10],
         },
     ]
 
-    model_gb_GS = GradientBoostingRegressor(
-        max_depth=5,
-        min_samples_leaf=5,
+    model_gb_coarse = GradientBoostingRegressor(
         random_state=42,
     )
 
-    grid_gb = run_grouped_grid_search(
-        model=model_gb_GS,
-        param_grid=param_grid_gb,
-        X=X_fold,
-        y=y_fold,
-        groups=groups_fold,
+    grid_gb_coarse = run_grouped_grid_search(
+        model=model_gb_coarse,
+        param_grid=param_grid_gb_coarse,
+        X=X_cv_full,
+        y=y_cv,
+        groups=groups_cv,
         cv=cv,
     )
 
     notify_done()
-
-    grid_gb.best_params_
-    return grid_gb, param_grid_gb
+    return (grid_gb_coarse,)
 
 
 @app.cell
-def _(grid_gb):
-    -grid_gb.best_score_
-    return
+def _(GradientBoostingRegressor, grid_gb_coarse):
+    gb_coarse_params = grid_gb_coarse.best_params_
 
-
-@app.cell
-def _(grid_gb):
-    grid_gb.best_estimator_
-    return
-
-
-@app.cell
-def _(temporal_config):
-    temporal_config_short = {
-        "mean": [5],
-        "delta": [5],
-        "slope": [5],
-    }
-
-    temporal_config_medium = {
-        "mean": [10],
-        "delta": [10],
-        "slope": [10],
-    }
-
-    temporal_config_long = {
-        "mean": [20],
-        "delta": [20],
-        "slope": [20],
-    }
-
-    configs = [
-        temporal_config_short,
-        temporal_config_medium,
-        temporal_config_long,
-        temporal_config,
-    ]
-    return (configs,)
+    gb_coarse_tuned = GradientBoostingRegressor(
+        **gb_coarse_params,
+        random_state=42,
+    )
+    return gb_coarse_params, gb_coarse_tuned
 
 
 @app.cell
 def _(
-    GradientBoostingRegressor,
-    add_temporal_features,
-    available_sensors,
-    configs,
     cv,
-    df_train,
+    df_train_temporal,
     evaluate_grouped_cv,
+    feature_sets,
+    gb_coarse_tuned,
+    groups_cv,
     notify_done,
+    y_cv,
 ):
-    results_gb_conftuning = []
+    feature_set_results_gb = []
 
-    for config in configs:
-        df_train_temporal_conftuning = add_temporal_features(
-            df_train,
-            available_sensors,
-            config,
-        )
-
-        temporal_features_conftuning = [
-            column
-            for column in df_train_temporal_conftuning.columns
-            if any(suffix in column for suffix in ["_mean_", "_delta_", "_slope_"])
-        ]
-
-        raw_temporal_cycle_features_conftuning = [
-            "cycle",
-            *available_sensors,
-            *temporal_features_conftuning,
-        ]
-
-        groups_fold_conftuning = df_train_temporal_conftuning["engine_id"]
-
-        X_fold_conftuning = df_train_temporal_conftuning[
-            raw_temporal_cycle_features_conftuning
-        ]
-
-        y_fold_conftuning = df_train_temporal_conftuning["rul_capped"]
-
-        model_gb_tuned = GradientBoostingRegressor(
-            n_estimators=300,
-            learning_rate=0.04,
-            max_depth=5,
-            min_samples_leaf=5,
-            random_state=42,
-        )
-
-        results_gb_tuned = evaluate_grouped_cv(
-            model=model_gb_tuned,
-            X=X_fold_conftuning,
-            y=y_fold_conftuning,
-            groups=groups_fold_conftuning,
+    for _name, _features in feature_sets.items():
+        _metrics = evaluate_grouped_cv(
+            model=gb_coarse_tuned,
+            X=df_train_temporal[_features],
+            y=y_cv,
+            groups=groups_cv,
             cv=cv,
         )
 
-        results_gb_conftuning.append(results_gb_tuned)
-
-    notify_done()
-
-    return (results_gb_conftuning,)
-
-
-@app.cell
-def _(results_gb_conftuning):
-    results_gb_conftuning
-    return
-
-
-@app.cell
-def _(
-    GradientBoostingRegressor,
-    available_sensors,
-    cv,
-    df_train_temporal,
-    evaluate_grouped_cv,
-    groups_fold,
-    notify_done,
-    raw_temporal_cycle_features,
-    y_fold,
-):
-    results_gb_sensor_ablation_summary = []
-
-    for _sensor in available_sensors:
-        ablation_features = [
-            c
-            for c in raw_temporal_cycle_features
-            if c == _sensor or c.startswith(f"{_sensor}_")
-        ]
-
-        ablation_feature_columns = [
-            c for c in raw_temporal_cycle_features if c not in ablation_features
-        ]
-
-        X_fold_sensor_ablation = df_train_temporal[ablation_feature_columns]
-
-        model_gb_sensor_ablation = GradientBoostingRegressor(
-            n_estimators=300,
-            learning_rate=0.04,
-            max_depth=5,
-            min_samples_leaf=5,
-            random_state=42,
+        feature_set_results_gb.append(
+            {
+                "feature_set": _name,
+                "n_features": len(_features),
+                **_metrics,
+            }
         )
 
-        results_gb_sensor_ablation = evaluate_grouped_cv(
-            model=model_gb_sensor_ablation,
-            X=X_fold_sensor_ablation,
-            y=y_fold,
-            groups=groups_fold,
-            cv=cv,
-        )
-
-        results_gb_sensor_ablation_summary.append(results_gb_sensor_ablation)
-
     notify_done()
+    return (feature_set_results_gb,)
 
-    results_gb_sensor_ablation_summary.round(3)
+
+@app.cell
+def _(feature_set_results_gb, pd):
+    feature_set_results_gb_df = pd.DataFrame(feature_set_results_gb).sort_values(
+        "mean_MAE"
+    )
+    feature_set_results_gb_df
     return
 
 
 @app.cell
+def _(df_train_temporal, feature_sets):
+    final_feature_set_name_gb = "no_means"
+    final_feature_set_gb = feature_sets[final_feature_set_name_gb]
+    X_cv_gb = df_train_temporal[final_feature_set_gb]
+    return (X_cv_gb,)
+
+
+@app.cell(hide_code=True)
+def _():
+    tuning_A_param_grid_gb = {
+        "squared_error": {
+            "loss": "squared_error",
+        },
+        "absolute_error": {
+            "loss": "absolute_error",
+        },
+        "huber_0.80": {
+            "loss": "huber",
+            "alpha": 0.80,
+        },
+        "huber_0.90": {
+            "loss": "huber",
+            "alpha": 0.90,
+        },
+        "huber_0.95": {
+            "loss": "huber",
+            "alpha": 0.95,
+        },
+        "quantile_0.50": {
+            "loss": "quantile",
+            "alpha": 0.50,
+        },
+        "quantile_0.40": {
+            "loss": "quantile",
+            "alpha": 0.40,
+        },
+        "quantile_0.30": {
+            "loss": "quantile",
+            "alpha": 0.30,
+        },
+    }
+
+    subsample_values = [0.6, 0.8, 1.0]
+    max_features_values = [0.75, 1.0]
+    return max_features_values, subsample_values, tuning_A_param_grid_gb
+
+
+@app.cell
 def _(
     GradientBoostingRegressor,
-    available_sensors,
+    X_cv_gb,
     cv,
-    df_train_temporal,
     evaluate_grouped_cv,
-    groups_fold,
+    gb_coarse_params,
+    groups_cv,
+    max_features_values,
     notify_done,
-    raw_temporal_cycle_features,
-    y_fold,
+    product,
+    subsample_values,
+    tuning_A_param_grid_gb,
+    y_cv,
 ):
-    # no raw sensors
+    gb_tuning_A_results = []
 
-    ablation_features_no_raw = available_sensors
+    for _config_name, _loss_params in tuning_A_param_grid_gb.items():
+        for _subsample, _max_features in product(
+            subsample_values,
+            max_features_values,
+        ):
+            _model = GradientBoostingRegressor(
+                **gb_coarse_params,
+                **_loss_params,
+                subsample=_subsample,
+                max_features=_max_features,
+                random_state=42,
+            )
 
-    ablation_feature_columns_no_raw = [
-        c for c in raw_temporal_cycle_features if c not in ablation_features_no_raw
-    ]
+            _metrics = evaluate_grouped_cv(
+                model=_model,
+                X=X_cv_gb,
+                y=y_cv,
+                groups=groups_cv,
+                cv=cv,
+            )
 
-    X_fold_ablation_no_raw = df_train_temporal[ablation_feature_columns_no_raw]
-
-    model_gb_ablation_no_raw = GradientBoostingRegressor(
-        n_estimators=300,
-        learning_rate=0.04,
-        max_depth=5,
-        min_samples_leaf=5,
-        random_state=42,
-    )
-
-    results_gb_ablation_no_raw = evaluate_grouped_cv(
-        model=model_gb_ablation_no_raw,
-        X=X_fold_ablation_no_raw,
-        y=y_fold,
-        groups=groups_fold,
-        cv=cv,
-    )
+            gb_tuning_A_results.append(
+                {
+                    "configuration": _config_name,
+                    "loss": _loss_params["loss"],
+                    "alpha": _loss_params.get("alpha"),
+                    "subsample": _subsample,
+                    "max_features": _max_features,
+                    **_metrics,
+                }
+            )
 
     notify_done()
-
-    results_gb_ablation_no_raw
-    return (ablation_features_no_raw,)
+    return (gb_tuning_A_results,)
 
 
 @app.cell
-def _(
-    GradientBoostingRegressor,
-    cv,
-    df_train_temporal,
-    evaluate_grouped_cv,
-    groups_fold,
-    notify_done,
-    raw_temporal_cycle_features,
-    y_fold,
-):
-    # no means
-    ablation_features_no_means = [
-        c for c in raw_temporal_cycle_features if "_mean_" in c
-    ]
-
-    ablation_feature_columns_no_means = [
-        c for c in raw_temporal_cycle_features if c not in ablation_features_no_means
-    ]
-
-    X_fold_ablation_no_means = df_train_temporal[ablation_feature_columns_no_means]
-
-    model_gb_ablation_no_means = GradientBoostingRegressor(
-        n_estimators=300,
-        learning_rate=0.04,
-        max_depth=5,
-        min_samples_leaf=5,
-        random_state=42,
-    )
-
-    results_gb_ablation_no_means = evaluate_grouped_cv(
-        model=model_gb_ablation_no_means,
-        X=X_fold_ablation_no_means,
-        y=y_fold,
-        groups=groups_fold,
-        cv=cv,
-    )
-
-    notify_done()
-
-    results_gb_ablation_no_means
-    return (ablation_features_no_means,)
-
-
-@app.cell
-def _(
-    GradientBoostingRegressor,
-    cv,
-    df_train_temporal,
-    evaluate_grouped_cv,
-    groups_fold,
-    notify_done,
-    raw_temporal_cycle_features,
-    y_fold,
-):
-    # no deltas
-    ablation_features_no_deltas = [
-        c for c in raw_temporal_cycle_features if "_delta_" in c
-    ]
-
-    ablation_feature_columns_no_deltas = [
-        c for c in raw_temporal_cycle_features if c not in ablation_features_no_deltas
-    ]
-
-    X_fold_ablation_no_deltas = df_train_temporal[ablation_feature_columns_no_deltas]
-
-    model_gb_ablation_no_deltas = GradientBoostingRegressor(
-        n_estimators=300,
-        learning_rate=0.04,
-        max_depth=5,
-        min_samples_leaf=5,
-        random_state=42,
-    )
-
-    results_gb_ablation_no_deltas = evaluate_grouped_cv(
-        model=model_gb_ablation_no_deltas,
-        X=X_fold_ablation_no_deltas,
-        y=y_fold,
-        groups=groups_fold,
-        cv=cv,
-    )
-
-    notify_done()
-
-    results_gb_ablation_no_deltas
-    return
-
-
-@app.cell
-def _(
-    GradientBoostingRegressor,
-    cv,
-    df_train_temporal,
-    evaluate_grouped_cv,
-    groups_fold,
-    notify_done,
-    raw_temporal_cycle_features,
-    y_fold,
-):
-    # no slope
-    ablation_features_no_slope = [
-        c for c in raw_temporal_cycle_features if "_slope_" in c
-    ]
-
-    ablation_feature_columns_no_slope = [
-        c for c in raw_temporal_cycle_features if c not in ablation_features_no_slope
-    ]
-
-    X_fold_ablation_no_slope = df_train_temporal[ablation_feature_columns_no_slope]
-
-    model_gb_ablation_no_slope = GradientBoostingRegressor(
-        n_estimators=300,
-        learning_rate=0.04,
-        max_depth=5,
-        min_samples_leaf=5,
-        random_state=42,
-    )
-
-    results_gb_ablation_no_slope = evaluate_grouped_cv(
-        model=model_gb_ablation_no_slope,
-        X=X_fold_ablation_no_slope,
-        y=y_fold,
-        groups=groups_fold,
-        cv=cv,
-    )
-
-    notify_done()
-
-    results_gb_ablation_no_slope
-    return (results_gb_ablation_no_slope,)
-
-
-@app.cell
-def _(
-    GradientBoostingRegressor,
-    cv,
-    df_train_temporal,
-    evaluate_grouped_cv,
-    groups_fold,
-    notify_done,
-    raw_temporal_cycle_features,
-    results_gb_ablation_no_slope,
-    y_fold,
-):
-    # no means nor deltas
-    ablation_features_no_means_nor_deltas = [
-        c for c in raw_temporal_cycle_features if "_mean_" in c or "_delta_" in c
-    ]
-
-    ablation_feature_columns_no_means_nor_deltas = [
-        c
-        for c in raw_temporal_cycle_features
-        if c not in ablation_features_no_means_nor_deltas
-    ]
-
-    X_fold_ablation_no_means_nor_deltas = df_train_temporal[
-        ablation_feature_columns_no_means_nor_deltas
-    ]
-
-    model_gb_ablation_no_means_nor_deltas = GradientBoostingRegressor(
-        n_estimators=300,
-        learning_rate=0.04,
-        max_depth=5,
-        min_samples_leaf=5,
-        random_state=42,
-    )
-
-    results_gb_ablation_no_means_nor_deltas = evaluate_grouped_cv(
-        model=model_gb_ablation_no_means_nor_deltas,
-        X=X_fold_ablation_no_means_nor_deltas,
-        y=y_fold,
-        groups=groups_fold,
-        cv=cv,
-    )
-
-    notify_done()
-
-    results_gb_ablation_no_means_nor_deltas
-    return
-
-
-@app.cell
-def _(
-    GradientBoostingRegressor,
-    ablation_features_no_means,
-    ablation_features_no_raw,
-    cv,
-    df_train_temporal,
-    evaluate_grouped_cv,
-    groups_fold,
-    notify_done,
-    raw_temporal_cycle_features,
-    y_fold,
-):
-    # no means nor raw
-    ablation_feature_columns_no_means_nor_raw = [
-        c
-        for c in raw_temporal_cycle_features
-        if c not in ablation_features_no_raw and c not in ablation_features_no_means
-    ]
-
-    X_fold_ablation_no_means_nor_raw = df_train_temporal[
-        ablation_feature_columns_no_means_nor_raw
-    ]
-
-    model_gb_ablation_no_means_nor_raw = GradientBoostingRegressor(
-        n_estimators=300,
-        learning_rate=0.04,
-        max_depth=5,
-        min_samples_leaf=5,
-        random_state=42,
-    )
-
-    results_gb_ablation_no_means_nor_raw = evaluate_grouped_cv(
-        model=model_gb_ablation_no_means_nor_raw,
-        X=X_fold_ablation_no_means_nor_raw,
-        y=y_fold,
-        groups=groups_fold,
-        cv=cv,
-    )
-
-    notify_done()
-
-    results_gb_ablation_no_means_nor_raw
-    return
-
-
-@app.cell
-def _(df_train_temporal, raw_temporal_cycle_features):
-    final_feature_set = [
-        column for column in raw_temporal_cycle_features if "_mean_" not in column
-    ]
-
-    X_fold_final = df_train_temporal[final_feature_set]
-    return (X_fold_final,)
-
-
-@app.cell
-def _(
-    GradientBoostingRegressor,
-    X_fold_final,
-    cv,
-    groups_fold,
-    notify_done,
-    param_grid_gb,
-    run_grouped_grid_search,
-    y_fold,
-):
-    grid_search_gb_final = run_grouped_grid_search(
-        model=GradientBoostingRegressor(random_state=42),
-        param_grid=param_grid_gb,
-        X=X_fold_final,
-        y=y_fold,
-        groups=groups_fold,
-        cv=cv,
-    )
-
-    notify_done()
-    return (grid_search_gb_final,)
-
-
-@app.cell
-def _(grid_search_gb_final, pd):
-    results_gb_after_ablation = pd.DataFrame(grid_search_gb_final.cv_results_)
-
-    results_gb_after_ablation["mean_MAE"] = -results_gb_after_ablation["mean_test_MAE"]
-
-    top_4_gb_after_ablation = results_gb_after_ablation.nsmallest(
-        4,
+def _(gb_tuning_A_results, pd):
+    gb_tuning_a_columns = [
+        "configuration",
+        "loss",
+        "alpha",
+        "subsample",
+        "max_features",
         "mean_MAE",
-    )
-
-    top_4_gb_after_ablation[
-        [
-            "params",
-            "mean_MAE",
-            "std_test_MAE",
-            "mean_test_RMSE",
-        ]
+        "std_MAE",
+        "mean_RMSE",
+        "overestimation_rate",
+        "mean_signed_error",
+        "mean_overestimation",
     ]
+
+    gb_tuning_a_results_df = (
+        pd.DataFrame(gb_tuning_A_results)[gb_tuning_a_columns]
+        .sort_values("mean_MAE")
+        .round(3)
+    )
+    gb_tuning_a_results_df
+    return (gb_tuning_a_results_df,)
+
+
+@app.cell
+def _(gb_tuning_a_results_df):
+    best_mae = gb_tuning_a_results_df["mean_MAE"].min()
+
+    gb_tuning_a_candidates = gb_tuning_a_results_df[
+        gb_tuning_a_results_df["mean_MAE"] <= best_mae * 1.05
+    ].sort_values(["overestimation_rate", "mean_MAE"])
+
+    gb_tuning_a_candidates
     return
+
+
+@app.cell
+def _():
+    gb_tuning_b_profiles = {
+        "absolute_error_accuracy": {
+            "loss": "absolute_error",
+            "subsample": 0.6,
+            "max_features": 1.0,
+        },
+        "huber_0.80": {
+            "loss": "huber",
+            "alpha": 0.80,
+            "subsample": 0.6,
+            "max_features": 1.0,
+        },
+        "squared_error_balanced": {
+            "loss": "squared_error",
+            "subsample": 0.6,
+            "max_features": 0.75,
+        },
+        "quantile_0.40_conservative": {
+            "loss": "quantile",
+            "alpha": 0.40,
+            "subsample": 0.6,
+            "max_features": 0.75,
+        },
+        "quantile_0.30_conservative": {
+            "loss": "quantile",
+            "alpha": 0.30,
+            "subsample": 1.0,
+            "max_features": 0.75,
+        },
+    }
+    return (gb_tuning_b_profiles,)
+
+
+@app.cell
+def _():
+    boosting_schedules = [
+        (0.02, 600),
+        (0.03, 400),
+        (0.04, 300),
+        (0.05, 240),
+        (0.06, 200),
+    ]
+
+    max_depth_values = [3, 5, 7]
+    min_samples_leaf_values = [2, 5, 10]
+    return boosting_schedules, max_depth_values, min_samples_leaf_values
+
+
+@app.cell
+def _(
+    boosting_schedules,
+    gb_tuning_b_profiles,
+    max_depth_values,
+    min_samples_leaf_values,
+):
+    tuning_B_param_grid_gb = []
+
+    for _profiles in gb_tuning_b_profiles.values():
+        for _learning_rate, _n_estimators in boosting_schedules:
+            _params = {
+                "learning_rate": [_learning_rate],
+                "n_estimators": [_n_estimators],
+                "max_depth": max_depth_values,
+                "min_samples_leaf": min_samples_leaf_values,
+                "loss": [_profiles["loss"]],
+                "subsample": [_profiles["subsample"]],
+                "max_features": [_profiles["max_features"]],
+            }
+
+            if "alpha" in _profiles:
+                _params["alpha"] = [_profiles["alpha"]]
+
+            tuning_B_param_grid_gb.append(_params)
+    return (tuning_B_param_grid_gb,)
 
 
 @app.cell
 def _(
     GradientBoostingRegressor,
-    after_ablation_feature_set,
+    GridSearchCV,
+    X_cv_gb,
     cv,
-    df_train_temporal,
-    evaluate_grouped_cv,
-    groups_fold,
+    groups_cv,
     notify_done,
-    y_fold,
+    scoring,
+    tuning_B_param_grid_gb,
+    y_cv,
 ):
-    X_fold_final_comparison = df_train_temporal[after_ablation_feature_set]
-
-    model_gb_final_comparison = GradientBoostingRegressor(
-        n_estimators=300,
-        learning_rate=0.04,
-        max_depth=5,
-        min_samples_leaf=5,
-        random_state=42,
-    )
-
-    results_gb_final_comparison = evaluate_grouped_cv(
-        model=model_gb_final_comparison,
-        X=X_fold_final_comparison,
-        y=y_fold,
-        groups=groups_fold,
+    grid_gb_tuning_b = GridSearchCV(
+        estimator=GradientBoostingRegressor(random_state=42),
+        param_grid=tuning_B_param_grid_gb,
+        scoring=scoring,
+        refit=False,
         cv=cv,
+        n_jobs=-1,
+        verbose=2,
     )
+
+    grid_gb_tuning_b.fit(X_cv_gb, y_cv, groups=groups_cv)
 
     notify_done()
+    return (grid_gb_tuning_b,)
 
-    results_gb_final_comparison
-    return X_fold_final_comparison, results_gb_final_comparison
+
+@app.cell
+def _(grid_gb_tuning_b, pd):
+    gb_tuning_b_results = pd.DataFrame(grid_gb_tuning_b.cv_results_).round(3)
+
+    gb_tuning_b_results["mean_MAE"] = -gb_tuning_b_results["mean_test_MAE"]
+
+    gb_tuning_b_results["mean_RMSE"] = -gb_tuning_b_results["mean_test_RMSE"]
+
+    gb_tuning_b_results["overestimation_rate"] = -gb_tuning_b_results[
+        "mean_test_overestimation_rate"
+    ]
+
+    gb_tuning_b_results["mean_overestimation"] = -gb_tuning_b_results[
+        "mean_test_mean_overestimation"
+    ]
+
+    gb_tuning_b_results["mean_signed_error"] = gb_tuning_b_results[
+        "mean_test_mean_signed_error"
+    ]
+
+    gb_tuning_b_results
+    return
+
+
+@app.cell
+def _():
+    gb_tuning_b2_profiles = {
+        "absolute_error": {
+            "loss": "absolute_error",
+            "subsample": 0.6,
+            "max_features": 1.0,
+        },
+        "huber_0.80": {
+            "loss": "huber",
+            "alpha": 0.80,
+            "subsample": 0.6,
+            "max_features": 1.0,
+        },
+        "squared_error": {
+            "loss": "squared_error",
+            "subsample": 0.6,
+            "max_features": 0.75,
+        },
+        "quantile_0.40": {
+            "loss": "quantile",
+            "alpha": 0.40,
+            "subsample": 0.6,
+            "max_features": 0.75,
+        },
+        "quantile_0.30": {
+            "loss": "quantile",
+            "alpha": 0.30,
+            "subsample": 1.0,
+            "max_features": 0.75,
+        },
+    }
+    return (gb_tuning_b2_profiles,)
+
+
+@app.cell
+def _():
+    boosting_schedules_b2 = [
+        (0.010, 1200),
+        (0.015, 800),
+        (0.020, 600),
+        (0.025, 480),
+        (0.030, 400),
+    ]
+
+    max_depth_values_b2 = [6, 7, 8, 9]
+    min_samples_leaf_high = [5, 10, 15, 20]
+    min_samples_leaf_middle = [2, 5, 10, 15]
+    return (
+        boosting_schedules_b2,
+        max_depth_values_b2,
+        min_samples_leaf_high,
+        min_samples_leaf_middle,
+    )
 
 
 @app.cell
 def _(
-    ExtraTreesRegressor,
-    X_fold_final_comparison,
-    cv,
-    evaluate_grouped_cv,
-    groups_fold,
-    notify_done,
-    y_fold,
+    ParameterGrid,
+    boosting_schedules_b2,
+    gb_tuning_b2_profiles,
+    max_depth_values_b2,
+    min_samples_leaf_high,
+    min_samples_leaf_middle,
 ):
-    model_et_final_comparison = ExtraTreesRegressor(
-        n_estimators=100,
-        max_depth=14,
-        max_features=1.0,
-        min_samples_leaf=4,
-        random_state=42,
-    )
+    param_grids_gb_tuning_b2 = {}
 
-    results_et_final_comparison = evaluate_grouped_cv(
-        model=model_et_final_comparison,
-        X=X_fold_final_comparison,
-        y=y_fold,
-        groups=groups_fold,
-        cv=cv,
-    )
+    for _profile_name, _profile in gb_tuning_b2_profiles.items():
+        if _profile_name in {
+            "absolute_error",
+            "huber_0.80",
+            "quantile_0.40",
+        }:
+            _leaf_values = min_samples_leaf_high
+        else:
+            _leaf_values = min_samples_leaf_middle
 
-    notify_done()
+        _profile_grid = []
 
-    results_et_final_comparison
-    return (results_et_final_comparison,)
+        for _learning_rate, _n_estimators in boosting_schedules_b2:
+            _grid = {
+                "learning_rate": [_learning_rate],
+                "n_estimators": [_n_estimators],
+                "max_depth": max_depth_values_b2,
+                "min_samples_leaf": _leaf_values,
+                "loss": [_profile["loss"]],
+                "subsample": [_profile["subsample"]],
+                "max_features": [_profile["max_features"]],
+            }
 
+            if "alpha" in _profile:
+                _grid["alpha"] = [_profile["alpha"]]
 
-@app.cell
-def _(pd, results_et_final_comparison, results_gb_final_comparison):
-    pd.DataFrame(
-        {
-            "Model": ["Gradient Boosting", "Extra Trees"],
-            "mean_MAE": [
-                results_gb_final_comparison["mean_MAE"],
-                results_et_final_comparison["mean_MAE"],
-            ],
-            "stds_MAE": [
-                results_gb_final_comparison["std_MAE"],
-                results_et_final_comparison["std_MAE"],
-            ],
-            "means_RMSE": [
-                results_gb_final_comparison["mean_RMSE"],
-                results_et_final_comparison["mean_RMSE"],
-            ],
-            "stds_RMSE": [
-                results_gb_final_comparison["std_RMSE"],
-                results_et_final_comparison["std_RMSE"],
-            ],
-        }
-    ).round(3)
-    return
+            _profile_grid.append(_grid)
+
+        param_grids_gb_tuning_b2[_profile_name] = _profile_grid
+
+    for _profile_name, _param_grid in param_grids_gb_tuning_b2.items():
+        _n_candidates = len(list(ParameterGrid(_param_grid)))
+
+        print(_profile_name, "->", _n_candidates, "candidates")
+
+        assert _n_candidates == 80
+    return (param_grids_gb_tuning_b2,)
 
 
 @app.cell
 def _(
     GradientBoostingRegressor,
-    after_ablation_feature_set,
-    df_train_temporal,
-    df_validation_temporal,
-    mean_absolute_error,
+    GridSearchCV,
+    ParameterGrid,
+    X_cv_gb,
+    checkpoint_dir,
+    cv,
+    groups_cv,
     notify_done,
-    root_mean_squared_error,
-):
-    X_train_after_ablation = df_train_temporal[after_ablation_feature_set]
-    X_validation_after_ablation = df_validation_temporal[after_ablation_feature_set]
-
-    y_train = df_train_temporal["rul_capped"]
-    y_validation = df_validation_temporal["rul_capped"]
-
-    model_gb_evaluation = GradientBoostingRegressor(
-        n_estimators=300,
-        learning_rate=0.04,
-        max_depth=5,
-        min_samples_leaf=5,
-        random_state=42,
-        loss="absolute_error",
-    )
-
-    model_gb_evaluation.fit(X_train_after_ablation, y_train)
-
-    y_pred_train_gb_evaluation = model_gb_evaluation.predict(X_train_after_ablation)
-    y_pred_validation_gb_evaluation = model_gb_evaluation.predict(
-        X_validation_after_ablation
-    )
-
-    mae_train_gb_evaluation = mean_absolute_error(y_train, y_pred_train_gb_evaluation)
-    mae_validation_gb_evaluation = mean_absolute_error(
-        y_validation, y_pred_validation_gb_evaluation
-    )
-
-    rmse_train_gb_evaluation = root_mean_squared_error(
-        y_train, y_pred_train_gb_evaluation
-    )
-    rmse_validation_gb_evaluation = root_mean_squared_error(
-        y_validation, y_pred_validation_gb_evaluation
-    )
-
-    notify_done()
-    return (
-        X_train_after_ablation,
-        X_validation_after_ablation,
-        mae_train_gb_evaluation,
-        mae_validation_gb_evaluation,
-        rmse_train_gb_evaluation,
-        rmse_validation_gb_evaluation,
-        y_train,
-        y_validation,
-    )
-
-
-@app.cell
-def _(
-    ExtraTreesRegressor,
-    X_train_after_ablation,
-    X_validation_after_ablation,
-    mean_absolute_error,
-    notify_done,
-    root_mean_squared_error,
-    y_train,
-    y_validation,
-):
-    model_et_evaluation = ExtraTreesRegressor(
-        n_estimators=100,
-        min_samples_leaf=4,
-        max_features=1.0,
-        random_state=42,
-    )
-
-    model_et_evaluation.fit(X_train_after_ablation, y_train)
-
-    y_pred_train_et_evaluation = model_et_evaluation.predict(X_train_after_ablation)
-    y_pred_validation_et_evaluation = model_et_evaluation.predict(
-        X_validation_after_ablation
-    )
-
-    mae_train_et_evaluation = mean_absolute_error(y_train, y_pred_train_et_evaluation)
-    mae_validation_et_evaluation = mean_absolute_error(
-        y_validation, y_pred_validation_et_evaluation
-    )
-
-    rmse_train_et_evaluation = root_mean_squared_error(
-        y_train, y_pred_train_et_evaluation
-    )
-    rmse_validation_et_evaluation = root_mean_squared_error(
-        y_validation, y_pred_validation_et_evaluation
-    )
-
-    notify_done()
-    return (
-        mae_train_et_evaluation,
-        mae_validation_et_evaluation,
-        rmse_train_et_evaluation,
-        rmse_validation_et_evaluation,
-    )
-
-
-@app.cell
-def _(
-    mae_train_et_evaluation,
-    mae_train_gb_evaluation,
-    mae_validation_et_evaluation,
-    mae_validation_gb_evaluation,
+    param_grids_gb_tuning_b2,
     pd,
-    rmse_train_et_evaluation,
-    rmse_train_gb_evaluation,
-    rmse_validation_et_evaluation,
-    rmse_validation_gb_evaluation,
+    scoring,
+    y_cv,
 ):
-    pd.DataFrame(
-        {
-            "Model": ["Gradient Boosting", "Extra Tree"],
-            "MAE_train": [mae_train_gb_evaluation, mae_train_et_evaluation],
-            "RMSE_train": [rmse_train_gb_evaluation, rmse_train_et_evaluation],
-            "MAE_validation": [
-                mae_validation_gb_evaluation,
-                mae_validation_et_evaluation,
-            ],
-            "RMSE_validation": [
-                rmse_validation_gb_evaluation,
-                rmse_validation_et_evaluation,
-            ],
-        }
-    ).round(3)
+    gb_tuning_b2_results = []
+
+    for _profile_name, _param_grid in param_grids_gb_tuning_b2.items():
+        _checkpoint_path = checkpoint_dir / f"{_profile_name}.csv"
+
+        if _checkpoint_path.exists():
+            print(f"[SKIP] {_profile_name}: checkpoint already exists.")
+
+            _results = pd.read_csv(_checkpoint_path)
+
+            gb_tuning_b2_results.append(_results)
+
+            continue
+
+        _n_candidates = len(list(ParameterGrid(_param_grid)))
+
+        assert _n_candidates == 80
+
+        print(
+            f"\n[START] {_profile_name}: "
+            f"{_n_candidates} candidates / "
+            f"{_n_candidates * 5} fits"
+        )
+
+        _grid_search = GridSearchCV(
+            estimator=GradientBoostingRegressor(
+                random_state=42,
+            ),
+            param_grid=_param_grid,
+            scoring=scoring,
+            refit=False,
+            cv=cv,
+            n_jobs=-1,
+            pre_dispatch="n_jobs",
+            error_score="raise",
+            verbose=2,
+        )
+
+        _grid_search.fit(
+            X_cv_gb,
+            y_cv,
+            groups=groups_cv,
+        )
+
+        _results = pd.DataFrame(_grid_search.cv_results_)
+
+        _results["profile"] = _profile_name
+
+        _results["mean_MAE"] = -_results["mean_test_MAE"]
+
+        _results["mean_RMSE"] = -_results["mean_test_RMSE"]
+
+        _results["overestimation_rate"] = -_results["mean_test_overestimation_rate"]
+
+        _results["mean_overestimation"] = -_results["mean_test_mean_overestimation"]
+
+        _results["mean_signed_error"] = _results["mean_test_mean_signed_error"]
+
+        _results.to_csv(
+            _checkpoint_path,
+            index=False,
+        )
+
+        gb_tuning_b2_results.append(_results)
+
+        print(f"[DONE] {_profile_name}")
+
+        notify_done()
+    return (gb_tuning_b2_results,)
+
+
+@app.cell
+def _(gb_tuning_b2_results):
+    gb_tuning_b2_results
     return
 
 
 @app.cell
-def _(ExtraTreesRegressor, GridSearchCV, X_fold, gkf, groups_fold, pd, y_fold):
-    param_grid = {
+def _(Path, gb_tuning_b2_profiles):
+    checkpoint_dir_b3 = Path("results/gb_tuning_b3")
+    checkpoint_dir_b3.mkdir(parents=True, exist_ok=True)
+
+    gb_tuning_b3_specs = {
+        "absolute_error": {
+            "schedules": [
+                (0.015, 800),
+            ],
+            "max_depth": [8, 9, 10, 11],
+            "min_samples_leaf": [15, 20, 25, 30],
+        },
+        "huber_0.80": {
+            "schedules": [
+                (0.0075, 1600),
+                (0.0100, 1200),
+                (0.0150, 800),
+            ],
+            "max_depth": [8, 9, 10],
+            "min_samples_leaf": [15, 20, 25],
+        },
+        "squared_error": {
+            "schedules": [
+                (0.0075, 1600),
+                (0.0100, 1200),
+                (0.0150, 800),
+            ],
+            "max_depth": [8, 9, 10],
+            "min_samples_leaf": [10, 15, 20],
+        },
+        "quantile_0.40": {
+            "schedules": [
+                (0.0075, 1600),
+                (0.0100, 1200),
+                (0.0150, 800),
+            ],
+            "max_depth": [8, 9, 10],
+            "min_samples_leaf": [15, 20, 25, 30],
+        },
+        "quantile_0.30": {
+            "schedules": [
+                (0.020, 600),
+            ],
+            "max_depth": [8, 9, 10, 11],
+            "min_samples_leaf": [10, 15, 20, 25],
+        },
+    }
+
+    param_grids_gb_tuning_b3 = {}
+
+    for _profile_name, _spec in gb_tuning_b3_specs.items():
+        _profile = gb_tuning_b2_profiles[_profile_name]
+        _profile_grid = []
+
+        for _learning_rate, _n_estimators in _spec["schedules"]:
+            _grid = {
+                "learning_rate": [_learning_rate],
+                "n_estimators": [_n_estimators],
+                "max_depth": _spec["max_depth"],
+                "min_samples_leaf": _spec["min_samples_leaf"],
+                "loss": [_profile["loss"]],
+                "subsample": [_profile["subsample"]],
+                "max_features": [_profile["max_features"]],
+            }
+
+            if "alpha" in _profile:
+                _grid["alpha"] = [_profile["alpha"]]
+
+            _profile_grid.append(_grid)
+
+        param_grids_gb_tuning_b3[_profile_name] = _profile_grid
+    return checkpoint_dir_b3, param_grids_gb_tuning_b3
+
+
+@app.cell
+def _(ParameterGrid, param_grids_gb_tuning_b3):
+    expected_candidates_b3 = {
+        "absolute_error": 16,
+        "huber_0.80": 27,
+        "squared_error": 27,
+        "quantile_0.40": 36,
+        "quantile_0.30": 16,
+    }
+
+    _total_candidates = 0
+
+    for _profile_name, _param_grid in param_grids_gb_tuning_b3.items():
+        _n_candidates = len(list(ParameterGrid(_param_grid)))
+
+        print(f"{_profile_name}: {_n_candidates} candidates / {_n_candidates * 5} fits")
+
+        assert _n_candidates == expected_candidates_b3[_profile_name]
+
+        _total_candidates += _n_candidates
+
+    assert _total_candidates == 122
+
+    print(f"\nTOTAL: {_total_candidates} candidates / {_total_candidates * 5} fits")
+    return (expected_candidates_b3,)
+
+
+@app.cell
+def _(
+    GradientBoostingRegressor,
+    GridSearchCV,
+    ParameterGrid,
+    X_cv_gb,
+    checkpoint_dir_b3,
+    cv,
+    expected_candidates_b3,
+    groups_cv,
+    notify_done,
+    param_grids_gb_tuning_b3,
+    pd,
+    scoring,
+    y_cv,
+):
+    gb_tuning_b3_results = []
+
+    for _profile_name, _param_grid in param_grids_gb_tuning_b3.items():
+        _checkpoint_path = checkpoint_dir_b3 / f"{_profile_name}.csv"
+
+        if _checkpoint_path.exists():
+            print(f"[SKIP] {_profile_name}: checkpoint already exists")
+
+            _results = pd.read_csv(_checkpoint_path)
+
+            gb_tuning_b3_results.append(_results)
+
+            continue
+
+        _n_candidates = len(list(ParameterGrid(_param_grid)))
+
+        assert _n_candidates == expected_candidates_b3[_profile_name]
+
+        print(
+            f"\n[START] {_profile_name}: "
+            f"{_n_candidates} candidates / "
+            f"{_n_candidates * 5} fits"
+        )
+
+        _grid_search = GridSearchCV(
+            estimator=GradientBoostingRegressor(
+                random_state=42,
+            ),
+            param_grid=_param_grid,
+            scoring=scoring,
+            refit=False,
+            cv=cv,
+            n_jobs=-1,
+            pre_dispatch="n_jobs",
+            error_score="raise",
+            verbose=2,
+        )
+
+        _grid_search.fit(
+            X_cv_gb,
+            y_cv,
+            groups=groups_cv,
+        )
+
+        _results = pd.DataFrame(_grid_search.cv_results_)
+
+        _results["profile"] = _profile_name
+
+        _results["mean_MAE"] = -_results["mean_test_MAE"]
+
+        _results["mean_RMSE"] = -_results["mean_test_RMSE"]
+
+        _results["overestimation_rate"] = -_results["mean_test_overestimation_rate"]
+
+        _results["mean_overestimation"] = -_results["mean_test_mean_overestimation"]
+
+        _results["mean_signed_error"] = _results["mean_test_mean_signed_error"]
+
+        _results.to_csv(
+            _checkpoint_path,
+            index=False,
+        )
+
+        gb_tuning_b3_results.append(_results)
+
+        print(f"[DONE] {_profile_name}-> {_checkpoint_path}")
+
+        notify_done()
+    return (gb_tuning_b3_results,)
+
+
+@app.cell
+def _(checkpoint_dir_b3, gb_tuning_b3_results, pd):
+    gb_tuning_b3_results_df = pd.concat(
+        gb_tuning_b3_results,
+        ignore_index=True,
+    )
+
+    assert len(gb_tuning_b3_results_df) == 122
+
+    gb_tuning_b3_results_df.to_csv(
+        checkpoint_dir_b3 / "gb_tuning_b3_results.csv",
+        index=False,
+    )
+
+    gb_tuning_b3_results_df.shape
+    return
+
+
+@app.cell
+def _(pd):
+    gb_finalists = {
+        "absolute_error": {
+            "loss": "absolute_error",
+            "learning_rate": 0.015,
+            "n_estimators": 800,
+            "max_depth": 10,
+            "min_samples_leaf": 30,
+            "subsample": 0.6,
+            "max_features": 1.0,
+        },
+        "huber_0.80": {
+            "loss": "huber",
+            "alpha": 0.80,
+            "learning_rate": 0.0075,
+            "n_estimators": 1600,
+            "max_depth": 10,
+            "min_samples_leaf": 25,
+            "subsample": 0.6,
+            "max_features": 1.0,
+        },
+        "squared_error": {
+            "loss": "squared_error",
+            "learning_rate": 0.01,
+            "n_estimators": 1200,
+            "max_depth": 10,
+            "min_samples_leaf": 20,
+            "subsample": 0.6,
+            "max_features": 0.75,
+        },
+        "quantile_0.40": {
+            "loss": "quantile",
+            "alpha": 0.40,
+            "learning_rate": 0.0075,
+            "n_estimators": 1600,
+            "max_depth": 10,
+            "min_samples_leaf": 30,
+            "subsample": 0.6,
+            "max_features": 0.75,
+        },
+        "quantile_0.30": {
+            "loss": "quantile",
+            "alpha": 0.30,
+            "learning_rate": 0.02,
+            "n_estimators": 600,
+            "max_depth": 11,
+            "min_samples_leaf": 20,
+            "subsample": 1.0,
+            "max_features": 0.75,
+        },
+    }
+
+    gb_finalists_df = pd.DataFrame(gb_finalists)
+    gb_finalists_df
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    # EXTRA TREES
+    """)
+    return
+
+
+@app.cell
+def _(
+    ExtraTreesRegressor,
+    X_cv_full,
+    cv,
+    groups_cv,
+    notify_done,
+    pd,
+    run_grouped_grid_search,
+    y_cv,
+):
+    param_grid_et_coarse = {
         "max_depth": [14, 16, 18],
         "min_samples_leaf": [2, 4, 6],
     }
 
-    model_et_GS = ExtraTreesRegressor(
+    model_et_coarse = ExtraTreesRegressor(
         n_estimators=100, random_state=42, min_samples_leaf=1.0
     )
 
-    grid_search = GridSearchCV(
-        estimator=model_et_GS,
-        param_grid=param_grid,
-        cv=gkf,
-        scoring="neg_mean_absolute_error",
+    grid_et_coarse = run_grouped_grid_search(
+        model=model_et_coarse,
+        param_grid=param_grid_et_coarse,
+        X=X_cv_full,
+        y=y_cv,
+        groups=groups_cv,
+        cv=cv,
     )
 
-    grid_search.fit(X_fold, y_fold, groups=groups_fold)
-    results = pd.DataFrame(grid_search.cv_results_)
-    top_4 = results.nlargest(4, "mean_test_score")
+    notify_done()
 
-    print(top_4[["params", "mean_test_score", "std_test_score", "rank_test_score"]])
+    grid_et_coarse_results_df = pd.DataFrame(grid_et_coarse.cv_results_).round(3)
+    grid_et_coarse_results_df
     return
 
 
 @app.cell
-def _(GradientBoostingRegressor):
-    gb_loss_models = {
-        "squared_error": GradientBoostingRegressor(
-            n_estimators=300,
-            learning_rate=0.04,
-            max_depth=5,
-            min_samples_leaf=5,
-            loss="squared_error",
+def _(ExtraTreesRegressor, grid_et_reference, pd):
+    et_reference_params = grid_et_reference.best_params_
+
+    et_reference = ExtraTreesRegressor(
+        **et_reference_params,
+        random_state=42,
+    )
+
+    pd.DataFrame(grid_et_reference.cv_results_).to_csv(
+        "results/et_pre_tuning_results.csv",
+        index=False,
+    )
+    return (et_reference,)
+
+
+@app.cell
+def _(
+    cv,
+    df_train_temporal,
+    et_reference,
+    evaluate_grouped_cv,
+    feature_sets,
+    groups_cv,
+    notify_done,
+    y_cv,
+):
+    feature_set_results_et = []
+
+    for _name, _features in feature_sets.items():
+        _metrics = evaluate_grouped_cv(
+            model=et_reference,
+            X=df_train_temporal[_features],
+            y=y_cv,
+            groups=groups_cv,
+            cv=cv,
+        )
+
+        feature_set_results_et.append(
+            {
+                "feature_set": _name,
+                "n_features": len(_features),
+                **_metrics,
+            }
+        )
+
+    notify_done()
+    return (feature_set_results_et,)
+
+
+@app.cell
+def _(feature_set_results_et, pd):
+    feature_set_results_et_df = pd.DataFrame(feature_set_results_et).sort_values(
+        "mean_MAE"
+    )
+
+    feature_set_results_et_df.round(3)
+    return
+
+
+@app.cell
+def _(df_train_temporal, feature_sets):
+    final_feature_set_et = feature_sets["no_means_no_deltas"]
+
+    X_cv_et = df_train_temporal[final_feature_set_et]
+    return (X_cv_et,)
+
+
+@app.cell
+def _(
+    ExtraTreesRegressor,
+    GridSearchCV,
+    X_cv_et,
+    cv,
+    groups_cv,
+    notify_done,
+    scoring,
+    y_cv,
+):
+    param_grid_et_a = {
+        "max_depth": [14, 16, 18, 20, 22, 26, None],
+        "min_samples_leaf": [1, 2, 4, 6, 8],
+        "max_features": [0.5, 0.75, 1.0],
+    }
+
+    grid_et_a = GridSearchCV(
+        estimator=ExtraTreesRegressor(
             random_state=42,
+            n_estimators=100,
         ),
-        "absolute_error": GradientBoostingRegressor(
-            n_estimators=300,
-            learning_rate=0.04,
-            max_depth=5,
-            min_samples_leaf=5,
-            loss="absolute_error",
-            random_state=42,
+        param_grid=param_grid_et_a,
+        scoring=scoring,
+        refit=False,
+        cv=cv,
+        n_jobs=-1,
+        verbose=2,
+    )
+
+    grid_et_a.fit(X_cv_et, y_cv, groups=groups_cv)
+
+    notify_done()
+    return (grid_et_a,)
+
+
+@app.cell
+def _(grid_et_a, pd):
+    et_a_results = pd.DataFrame(grid_et_a.cv_results_).round(3)
+
+    et_a_results["mean_MAE"] = -et_a_results["mean_test_MAE"]
+
+    et_a_results["mean_RMSE"] = -et_a_results["mean_test_RMSE"]
+
+    et_a_results["overestimation_rate"] = -et_a_results["mean_test_overestimation_rate"]
+
+    et_a_results["mean_overestimation"] = -et_a_results["mean_test_mean_overestimation"]
+
+    et_a_results["mean_signed_error"] = et_a_results["mean_test_mean_signed_error"]
+
+    et_a_results
+    return
+
+
+@app.cell
+def _(grid_et_a, pd):
+    pd.DataFrame(grid_et_a.cv_results_).to_csv(
+        "results/et_tuning_a_results.csv",
+        index=False,
+    )
+    return
+
+
+@app.cell
+def _(Path):
+    from datetime import datetime
+    import time
+
+    checkpoint_dir_et_b = Path("results/et_tuning_b")
+    checkpoint_dir_et_b.mkdir(parents=True, exist_ok=True)
+
+    et_b_chunks = []
+
+    for _n_estimators in [200, 500, 1000]:
+        for _criterion in [
+            "squared_error",
+            "poisson",
+            "absolute_error",
+        ]:
+            et_b_chunks.append(
+                {
+                    "chunk_id": (f"n{_n_estimators}__{_criterion}__boostrap_false"),
+                    "param_grid": {
+                        "n_estimators": [_n_estimators],
+                        "max_depth": [20, 22, 24, 26],
+                        "min_samples_leaf": [1, 2, 3, 4],
+                        "min_samples_split": [2, 4, 8],
+                        "max_features": [0.875, 1.0],
+                        "criterion": [_criterion],
+                        "bootstrap": [False],
+                    },
+                }
+            )
+
+            for _max_samples in [0.7, 0.85, 1.0]:
+                et_b_chunks.append(
+                    {
+                        "chunk_id": (
+                            f"n{_n_estimators}"
+                            f"__{_criterion}"
+                            "__boostrap_true"
+                            f"__samples_{_max_samples}"
+                        ),
+                        "param_grid": {
+                            "n_estimators": [_n_estimators],
+                            "max_depth": [20, 22, 24, 26],
+                            "min_samples_leaf": [1, 2, 3, 4],
+                            "min_samples_split": [2, 4, 8],
+                            "max_features": [0.875, 1.0],
+                            "criterion": [_criterion],
+                            "bootstrap": [True],
+                            "max_samples": [_max_samples],
+                        },
+                    }
+                )
+    return checkpoint_dir_et_b, datetime, et_b_chunks, time
+
+
+@app.cell
+def _(ParameterGrid, et_b_chunks):
+    assert len(et_b_chunks) == 36
+
+    _total_candidates = 0
+
+    for _chunks in et_b_chunks:
+        _n_candidates = len(list(ParameterGrid(_chunks["param_grid"])))
+
+        assert _n_candidates == 96
+        _total_candidates += _n_candidates
+
+    print(
+        f"{len(et_b_chunks)} chunks\n"
+        f"{_total_candidates} candidates\n"
+        f"{_total_candidates * 5} fits"
+    )
+    return
+
+
+@app.cell
+def _(
+    ExtraTreesRegressor,
+    GridSearchCV,
+    ParameterGrid,
+    X_cv_et,
+    checkpoint_dir_et_b,
+    cv,
+    datetime,
+    et_b_chunks,
+    groups_cv,
+    pd,
+    scoring,
+    time,
+    y_cv,
+):
+    et_b_results = []
+
+    for _chunk in et_b_chunks:
+        _chunk_id = _chunk["chunk_id"]
+        _param_grid = _chunk["param_grid"]
+
+        _checkpoint_path = checkpoint_dir_et_b / f"{_chunk_id}.csv"
+
+        _running_path = checkpoint_dir_et_b / f"{_chunk_id}.running"
+
+        if _checkpoint_path.exists():
+            _existing = pd.read_csv(_checkpoint_path)
+
+            if len(_existing) == 96:
+                print(f"[SKIP] {_chunk_id}")
+
+                et_b_results.append(_existing)
+
+                continue
+            print(f"[INVALID CHECKPOINT] {_chunk_id} -> recompute")
+
+        _n_candidates = len(list(ParameterGrid(_param_grid)))
+
+        assert _n_candidates == 96
+
+        print(
+            f"\n{'=' * 70}\n"
+            f"[START] {_chunk_id}\n"
+            f"{datetime.now():%Y-%m-%d %H:%M:%S}\n"
+            f"{_n_candidates} candidates / "
+            f"{_n_candidates * 5} fits\n"
+            f"{'=' * 70}"
+        )
+
+        _running_path.write_text(f"Started : {datetime.now().isoformat()}")
+
+        _start_time = time.perf_counter()
+
+        _grid_search = GridSearchCV(
+            estimator=ExtraTreesRegressor(
+                random_state=42,
+                n_jobs=1,
+            ),
+            param_grid=_param_grid,
+            scoring=scoring,
+            refit=False,
+            cv=cv,
+            n_jobs=10,
+            pre_dispatch="n_jobs",
+            error_score="raise",
+            verbose=1,
+        )
+
+        _grid_search.fit(
+            X_cv_et,
+            y_cv,
+            groups=groups_cv,
+        )
+
+        _results = pd.DataFrame(_grid_search.cv_results_)
+
+        _results = pd.DataFrame(_grid_search.cv_results_)
+
+        assert len(_results) == 96
+
+        _results["mean_MAE"] = -_results["mean_test_MAE"]
+
+        _results["mean_RMSE"] = -_results["mean_test_RMSE"]
+
+        _results["overestimation_rate"] = -_results["mean_test_overestimation_rate"]
+
+        _results["mean_overstimation"] = -_results["mean_test_mean_overestimation"]
+
+        _results["mean_signed_error"] = _results["mean_test_mean_signed_error"]
+
+        _results["chunk_id"] = _chunk_id
+
+        _tmp_path = checkpoint_dir_et_b / f"{_chunk_id}.tmp.csv"
+
+        _results.to_csv(
+            _tmp_path,
+            index=False,
+        )
+
+        _tmp_path.replace(_checkpoint_path)
+
+        if _running_path.exists():
+            _running_path.unlink()
+
+        et_b_results.append(_results)
+
+        _elapsed = time.perf_counter() - _start_time
+
+        print(
+            f"[DONE] {_chunk_id}\n"
+            f"Duration: {_elapsed / 60:.1f} min\n"
+            f"Checkpoint: {_checkpoint_path}"
+        )
+    return (et_b_results,)
+
+
+@app.cell
+def _(checkpoint_dir_et_b, et_b_results, et_tuing_b_results_df, pd):
+    et_tuning_b_results_df = pd.concat(
+        et_b_results,
+        ignore_index=True,
+    )
+
+    assert len(et_tuning_b_results_df) == 3456
+
+    et_tuing_b_results_df.to_csv(
+        checkpoint_dir_et_b / "et_tuning_b_results.csv",
+        index=False,
+    )
+
+    et_tuning_b_results_df.shape
+    return
+
+
+@app.cell
+def _(
+    ExtraTreesRegressor,
+    X_cv_et,
+    cv,
+    groups_cv,
+    pd,
+    run_grouped_grid_search,
+    y_cv,
+):
+    param_grid_et_c = {"n_estimators": [200, 400, 600, 1000]}
+
+    grid_et_c = run_grouped_grid_search(
+        model=ExtraTreesRegressor(
+            max_depth=23,
+            min_samples_leaf=3,
+            min_samples_split=2,
+            max_features=1.0,
         ),
-        "huber_0.9": GradientBoostingRegressor(
-            n_estimators=300,
-            learning_rate=0.04,
-            max_depth=5,
-            min_samples_leaf=5,
-            loss="huber",
-            alpha=0.9,
-            random_state=42,
+        param_grid=param_grid_et_c,
+        X=X_cv_et,
+        y=y_cv,
+        groups=groups_cv,
+        cv=cv,
+    )
+
+    grid_et_c_results_df = pd.DataFrame(grid_et_c.cv_results_).round(3)
+    grid_et_c_results_df
+    return
+
+
+@app.cell
+def _(
+    X_train_after_ablation,
+    X_validation_after_ablation,
+    evaluate_model,
+    final_evaluation_models,
+    notify_done,
+    pd,
+    y_train,
+    y_validation,
+):
+    final_evaluation_results = []
+
+    for _name, _model in final_evaluation_models.items():
+        _metrics = evaluate_model(
+            _model,
+            X_train_after_ablation,
+            X_validation_after_ablation,
+            y_train,
+            y_validation,
+        )
+
+        final_evaluation_results.append(
+            {
+                "model": _name,
+                **_metrics,
+            }
+        )
+
+    notify_done()
+
+    pd.DataFrame(final_evaluation_results).sort_values("mae_validation").round(3)
+    return (final_evaluation_results,)
+
+
+@app.cell
+def _(final_evaluation_results, y_validation):
+    error_gb = final_evaluation_results[0]["y_pred_validation"] - y_validation
+    error_et = final_evaluation_results[1]["y_pred_validation"] - y_validation
+    return error_et, error_gb
+
+
+@app.cell
+def _(error_et, error_gb):
+    overestimation_rate_gb = (error_gb > 0).mean()
+    overestimation_rate_et = (error_et > 0).mean()
+
+    mean_signed_error_gb = error_gb.mean()
+    mean_signed_error_et = error_et.mean()
+
+    mean_overestimations_gb = error_gb[error_gb > 0].mean()
+    mean_overestimations_et = error_et[error_et > 0].mean()
+    return (
+        mean_overestimations_et,
+        mean_overestimations_gb,
+        mean_signed_error_et,
+        mean_signed_error_gb,
+        overestimation_rate_et,
+        overestimation_rate_gb,
+    )
+
+
+@app.cell
+def _(
+    mean_overestimations_et,
+    mean_overestimations_gb,
+    mean_signed_error_et,
+    mean_signed_error_gb,
+    overestimation_rate_et,
+    overestimation_rate_gb,
+    pd,
+):
+    pd.DataFrame(
+        {
+            "model": ["Gradient Boosting", "Extra Trees"],
+            "overestimation_rate": [overestimation_rate_gb, overestimation_rate_et],
+            "mean_signed_error": [mean_signed_error_gb, mean_signed_error_et],
+            "mean_overestimation": [mean_overestimations_gb, mean_overestimations_et],
+        }
+    ).round(3)
+    return
+
+
+app._unparsable_cell(
+    r"""
+    loss_quantile_models = {
+        "quantile_0.5" : GradientBoostingRegressor(
+            n_estimators=300
+            learning_rate=0.04
+            max_depth=5
+            min_samples_leaf=5
+            subsample=0.6
+            max_features=1.0
+            random_state=42
+            loss="quantile",
+            alpha=0.5,
+        ),
+        "quantile_0.4" : GradientBoostingRegressor(
+            n_estimators=300
+            learning_rate=0.04
+            max_depth=5
+            min_samples_leaf=5
+            subsample=0.6
+            max_features=1.0
+            random_state=42
+            loss="quantile",
+            alpha=0.4,
+        ),
+        "quantile_0.3" : GradientBoostingRegressor(
+            n_estimators=300
+            learning_rate=0.04
+            max_depth=5
+            min_samples_leaf=5
+            subsample=0.6
+            max_features=1.0
+            random_state=42
+            loss="quantile",
+            alpha=0.3,
         ),
     }
-    return (gb_loss_models,)
+    """,
+    name="_",
+)
 
 
 @app.cell
 def _(
     X_fold_final,
+    columns_to_display,
     cv,
+    et_n_estimators_models,
     evaluate_grouped_cv,
-    gb_loss_models,
-    groups_fold,
+    groups_cv,
+    notify_done,
     pd,
-    y_fold,
+    y_cv,
 ):
-    gb_loss_results = []
+    loss_quantile_results = []
 
-    for name, model in gb_loss_models.items():
-        metrics = evaluate_grouped_cv(
-            model,
+    for _name, _model in et_n_estimators_models.items():
+        _metrics = evaluate_grouped_cv(
+            _model,
             X_fold_final,
-            y_fold,
-            groups_fold,
+            y_cv,
+            groups_cv,
             cv=cv,
         )
 
-        gb_loss_results.append(
+        loss_quantile_results.append(
             {
-                "configuration": name,
-                **metrics,
+                "configuration": _name,
+                **_metrics,
             }
         )
 
-    gb_loss_results_df = pd.DataFrame(gb_loss_results).sort_values("mean_MAE")
-    gb_loss_results_df.round(3)
-    return
+    notify_done()
 
-
-@app.cell
-def _(GradientBoostingRegressor):
-    gb_subsample_models = {
-        "subsample_1.0": GradientBoostingRegressor(
-            n_estimators=300,
-            learning_rate=0.04,
-            max_depth=5,
-            min_samples_leaf=5,
-            loss="absolute_error",
-            subsample=1.0,
-            random_state=42,
-        ),
-        "subsample_0.8": GradientBoostingRegressor(
-            n_estimators=300,
-            learning_rate=0.04,
-            max_depth=5,
-            min_samples_leaf=5,
-            loss="absolute_error",
-            subsample=0.8,
-            random_state=42,
-        ),
-        "subsample_0.6": GradientBoostingRegressor(
-            n_estimators=300,
-            learning_rate=0.04,
-            max_depth=5,
-            min_samples_leaf=5,
-            loss="absolute_error",
-            subsample=0.6,
-            random_state=42,
-        ),
-    }
-    return (gb_subsample_models,)
-
-
-@app.cell
-def _(
-    X_fold_final,
-    cv,
-    evaluate_grouped_cv,
-    gb_subsample_models,
-    groups_fold,
-    pd,
-    y_fold,
-):
-    gb_subsample_results = []
-
-    for name, model in gb_subsample_models.items():
-        metrics = evaluate_grouped_cv(
-            model,
-            X_fold_final,
-            y_fold,
-            groups_fold,
-            cv=cv,
-        )
-
-        gb_subsample_results.append(
-            {
-                "configuration": name,
-                **metrics,
-            }
-        )
-
-    pd.DataFrame(gb_subsample_results).sort_values("mean_MAE").round(3)
+    pd.DataFrame(loss_quantile_results).sort_values("overestimation_rate")[
+        columns_to_display
+    ].round(3)
     return
 
 
