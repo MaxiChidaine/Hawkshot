@@ -1,0 +1,7 @@
+feature_set,n_features,mean_MAE,std_MAE,mean_RMSE,std_RMSE,mean_fit_time,mean_predict_time,overestimation_rate,mean_signed_error,mean_overestimation
+full,113,10.271,0.196,14.973,0.397,8.087,0.07,0.378,-0.368,13.017
+no_means,71,10.043,0.214,14.495,0.519,4.956,0.071,0.4,0.121,12.688
+no_deltas,85,10.292,0.171,14.994,0.359,5.906,0.071,0.377,-0.401,13.037
+no_slopes,85,11.538,0.224,16.821,0.332,5.513,0.069,0.353,-1.011,14.748
+no_means_no_deltas,43,9.981,0.22,14.426,0.53,3.091,0.068,0.399,0.105,12.625
+no_means_no_raw,57,11.987,0.551,17.157,0.759,4.095,0.07,0.389,0.2,15.607

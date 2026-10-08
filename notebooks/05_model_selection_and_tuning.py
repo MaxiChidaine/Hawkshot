@@ -10,6 +10,7 @@ def _():
     import pandas as pd
     import numpy as np
     import winsound
+    import time
 
     from pathlib import Path
     from sklearn.model_selection import ParameterGrid
@@ -33,8 +34,11 @@ def _():
     from hawkshot.features.temporal import add_temporal_features
 
     from time import perf_counter
+    from datetime import datetime
 
     from itertools import product
+
+    from xgboost import XGBRegressor
 
     df_raw = load_fd001("data/raw/cmapss")
     df_filtered, removed_sensors = filter_constant_sensors(df_raw)
@@ -56,10 +60,12 @@ def _():
         RandomForestRegressor,
         SVR,
         StandardScaler,
+        XGBRegressor,
         add_temporal_features,
         available_sensors,
         checkpoint_dir,
         clone,
+        datetime,
         df_filtered,
         mean_absolute_error,
         mo,
@@ -68,6 +74,7 @@ def _():
         perf_counter,
         product,
         root_mean_squared_error,
+        time,
         train_test_split,
         winsound,
     )
@@ -225,15 +232,12 @@ def _(clone, mean_absolute_error, np, perf_counter, root_mean_squared_error):
 
 
 @app.cell
-def _(GridSearchCV):
+def _(GridSearchCV, scoring):
     def run_grouped_grid_search(model, param_grid, X, y, groups, cv):
         grid_search = GridSearchCV(
             estimator=model,
             param_grid=param_grid,
-            scoring={
-                "MAE": "neg_mean_absolute_error",
-                "RMSE": "neg_root_mean_squared_error",
-            },
+            scoring=scoring,
             refit="MAE",
             cv=cv,
             n_jobs=-1,
@@ -278,7 +282,36 @@ def _(mean_absolute_error, perf_counter, root_mean_squared_error):
             "y_pred_validation": y_pred_validation,
         }
 
-    return (evaluate_model,)
+    return
+
+
+@app.cell
+def _(Path, pd):
+    def process_grid_search_results(grid_search, output_path):
+        results_df = pd.DataFrame(grid_search.cv_results_)
+
+        metric_signs = {
+            "MAE": -1,
+            "RMSE": -1,
+            "overestimation_rate": -1,
+            "mean_overestimation": -1,
+            "mean_signed_error": 1,
+        }
+
+        for metric, sign in metric_signs.items():
+            source_column = f"mean_test_{metric}"
+
+            if source_column in results_df.columns:
+                results_df[metric] = sign * results_df[source_column]
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        results_df.to_csv(output_path, index=False)
+
+        return results_df
+
+    return (process_grid_search_results,)
 
 
 @app.cell
@@ -319,6 +352,50 @@ def _(np):
 
 
 @app.cell
+def _(Path, pd):
+    def concat_csv_folder(
+        folder_path: str | Path,
+        output_path: str | Path,
+    ) -> pd.DataFrame:
+        folder_path = Path(folder_path)
+        output_path = Path(output_path)
+
+        print("folder_path reçu :", folder_path)
+        print("folder_path absolu :", folder_path.resolve())
+        print("exists :", folder_path.exists())
+
+        csv_files = sorted(folder_path.glob("*.csv"))
+
+        print("Nombre de CSV trouvés :", len(csv_files))
+        print(csv_files[:3])
+
+        if not csv_files:
+            raise FileNotFoundError(
+                f"Aucun fichier CSV trouvé dans {folder_path.resolve()}"
+            )
+
+        dataframes = [
+            pd.read_csv(csv_file)
+            for csv_file in csv_files
+            if csv_file.resolve() != output_path.resolve()
+        ]
+
+        combined_df = pd.concat(
+            dataframes,
+            ignore_index=True,
+        )
+
+        combined_df.to_csv(
+            output_path,
+            index=False,
+        )
+
+        return combined_df
+
+    return (concat_csv_folder,)
+
+
+@app.cell
 def _(GroupKFold, df_train_temporal, np, pd, raw_temporal_cycle_features):
     cv = GroupKFold(n_splits=5)
 
@@ -354,7 +431,7 @@ def _(GroupKFold, df_train_temporal, np, pd, raw_temporal_cycle_features):
     return X_cv_full, cv, groups_cv, y_cv
 
 
-@app.cell
+@app.cell(disabled=True)
 def _():
     CV_results_comparison = []
 
@@ -371,7 +448,7 @@ def _():
     return CV_results_comparison, columns_to_display
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     CV_results_comparison,
     ExtraTreesRegressor,
@@ -405,7 +482,7 @@ def _(
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     CV_results_comparison,
     RandomForestRegressor,
@@ -442,7 +519,7 @@ def _(
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     CV_results_comparison,
     GradientBoostingRegressor,
@@ -480,7 +557,7 @@ def _(
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     CV_results_comparison,
     Pipeline,
@@ -519,7 +596,7 @@ def _(
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(CV_results_comparison, columns_to_display, pd):
     pd.DataFrame(CV_results_comparison).sort_values("overestimation_rate")[
         columns_to_display
@@ -556,7 +633,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     GradientBoostingRegressor,
     X_cv_full,
@@ -616,7 +693,7 @@ def _(
     return (grid_gb_coarse,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(GradientBoostingRegressor, grid_gb_coarse):
     gb_coarse_params = grid_gb_coarse.best_params_
 
@@ -627,7 +704,7 @@ def _(GradientBoostingRegressor, grid_gb_coarse):
     return gb_coarse_params, gb_coarse_tuned
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     cv,
     df_train_temporal,
@@ -661,7 +738,7 @@ def _(
     return (feature_set_results_gb,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(feature_set_results_gb, pd):
     feature_set_results_gb_df = pd.DataFrame(feature_set_results_gb).sort_values(
         "mean_MAE"
@@ -670,7 +747,7 @@ def _(feature_set_results_gb, pd):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(df_train_temporal, feature_sets):
     final_feature_set_name_gb = "no_means"
     final_feature_set_gb = feature_sets[final_feature_set_name_gb]
@@ -718,7 +795,7 @@ def _():
     return max_features_values, subsample_values, tuning_A_param_grid_gb
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     GradientBoostingRegressor,
     X_cv_gb,
@@ -771,7 +848,7 @@ def _(
     return (gb_tuning_A_results,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(gb_tuning_A_results, pd):
     gb_tuning_a_columns = [
         "configuration",
@@ -796,7 +873,7 @@ def _(gb_tuning_A_results, pd):
     return (gb_tuning_a_results_df,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(gb_tuning_a_results_df):
     best_mae = gb_tuning_a_results_df["mean_MAE"].min()
 
@@ -808,7 +885,7 @@ def _(gb_tuning_a_results_df):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _():
     gb_tuning_b_profiles = {
         "absolute_error_accuracy": {
@@ -843,7 +920,7 @@ def _():
     return (gb_tuning_b_profiles,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _():
     boosting_schedules = [
         (0.02, 600),
@@ -858,7 +935,7 @@ def _():
     return boosting_schedules, max_depth_values, min_samples_leaf_values
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     boosting_schedules,
     gb_tuning_b_profiles,
@@ -886,7 +963,7 @@ def _(
     return (tuning_B_param_grid_gb,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     GradientBoostingRegressor,
     GridSearchCV,
@@ -914,7 +991,7 @@ def _(
     return (grid_gb_tuning_b,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(grid_gb_tuning_b, pd):
     gb_tuning_b_results = pd.DataFrame(grid_gb_tuning_b.cv_results_).round(3)
 
@@ -938,7 +1015,7 @@ def _(grid_gb_tuning_b, pd):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _():
     gb_tuning_b2_profiles = {
         "absolute_error": {
@@ -973,7 +1050,7 @@ def _():
     return (gb_tuning_b2_profiles,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _():
     boosting_schedules_b2 = [
         (0.010, 1200),
@@ -994,7 +1071,7 @@ def _():
     )
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     ParameterGrid,
     boosting_schedules_b2,
@@ -1044,7 +1121,7 @@ def _(
     return (param_grids_gb_tuning_b2,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     GradientBoostingRegressor,
     GridSearchCV,
@@ -1130,13 +1207,13 @@ def _(
     return (gb_tuning_b2_results,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(gb_tuning_b2_results):
     gb_tuning_b2_results
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(Path, gb_tuning_b2_profiles):
     checkpoint_dir_b3 = Path("results/gb_tuning_b3")
     checkpoint_dir_b3.mkdir(parents=True, exist_ok=True)
@@ -1211,7 +1288,7 @@ def _(Path, gb_tuning_b2_profiles):
     return checkpoint_dir_b3, param_grids_gb_tuning_b3
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(ParameterGrid, param_grids_gb_tuning_b3):
     expected_candidates_b3 = {
         "absolute_error": 16,
@@ -1238,7 +1315,7 @@ def _(ParameterGrid, param_grids_gb_tuning_b3):
     return (expected_candidates_b3,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     GradientBoostingRegressor,
     GridSearchCV,
@@ -1325,7 +1402,7 @@ def _(
     return (gb_tuning_b3_results,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(checkpoint_dir_b3, gb_tuning_b3_results, pd):
     gb_tuning_b3_results_df = pd.concat(
         gb_tuning_b3_results,
@@ -1343,8 +1420,9 @@ def _(checkpoint_dir_b3, gb_tuning_b3_results, pd):
     return
 
 
-@app.cell
-def _(pd):
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
     gb_finalists = {
         "absolute_error": {
             "loss": "absolute_error",
@@ -1398,6 +1476,7 @@ def _(pd):
 
     gb_finalists_df = pd.DataFrame(gb_finalists)
     gb_finalists_df
+    """)
     return
 
 
@@ -1409,7 +1488,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     ExtraTreesRegressor,
     X_cv_full,
@@ -1445,7 +1524,7 @@ def _(
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(ExtraTreesRegressor, grid_et_reference, pd):
     et_reference_params = grid_et_reference.best_params_
 
@@ -1461,7 +1540,7 @@ def _(ExtraTreesRegressor, grid_et_reference, pd):
     return (et_reference,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     cv,
     df_train_temporal,
@@ -1513,7 +1592,7 @@ def _(df_train_temporal, feature_sets):
     return (X_cv_et,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     ExtraTreesRegressor,
     GridSearchCV,
@@ -1549,7 +1628,7 @@ def _(
     return (grid_et_a,)
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(grid_et_a, pd):
     et_a_results = pd.DataFrame(grid_et_a.cv_results_).round(3)
 
@@ -1567,7 +1646,7 @@ def _(grid_et_a, pd):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(grid_et_a, pd):
     pd.DataFrame(grid_et_a.cv_results_).to_csv(
         "results/et_tuning_a_results.csv",
@@ -1576,11 +1655,8 @@ def _(grid_et_a, pd):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(Path):
-    from datetime import datetime
-    import time
-
     checkpoint_dir_et_b = Path("results/et_tuning_b")
     checkpoint_dir_et_b.mkdir(parents=True, exist_ok=True)
 
@@ -1628,10 +1704,10 @@ def _(Path):
                         },
                     }
                 )
-    return checkpoint_dir_et_b, datetime, et_b_chunks, time
+    return checkpoint_dir_et_b, et_b_chunks
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(ParameterGrid, et_b_chunks):
     assert len(et_b_chunks) == 36
 
@@ -1651,7 +1727,7 @@ def _(ParameterGrid, et_b_chunks):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     ExtraTreesRegressor,
     GridSearchCV,
@@ -1738,7 +1814,7 @@ def _(
 
         _results["overestimation_rate"] = -_results["mean_test_overestimation_rate"]
 
-        _results["mean_overstimation"] = -_results["mean_test_mean_overestimation"]
+        _results["mean_overestimation"] = -_results["mean_test_mean_overestimation"]
 
         _results["mean_signed_error"] = _results["mean_test_mean_signed_error"]
 
@@ -1768,16 +1844,14 @@ def _(
     return (et_b_results,)
 
 
-@app.cell
-def _(checkpoint_dir_et_b, et_b_results, et_tuing_b_results_df, pd):
+@app.cell(disabled=True)
+def _(checkpoint_dir_et_b, et_b_results, pd):
     et_tuning_b_results_df = pd.concat(
         et_b_results,
         ignore_index=True,
     )
 
-    assert len(et_tuning_b_results_df) == 3456
-
-    et_tuing_b_results_df.to_csv(
+    et_tuning_b_results_df.to_csv(
         checkpoint_dir_et_b / "et_tuning_b_results.csv",
         index=False,
     )
@@ -1786,197 +1860,1422 @@ def _(checkpoint_dir_et_b, et_b_results, et_tuing_b_results_df, pd):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(
     ExtraTreesRegressor,
     X_cv_et,
     cv,
     groups_cv,
-    pd,
+    notify_done,
+    process_grid_search_results,
     run_grouped_grid_search,
     y_cv,
 ):
-    param_grid_et_c = {"n_estimators": [200, 400, 600, 1000]}
+    param_grid_et_boundary = [
+        {
+            "criterion": ["absolute_error"],
+            "n_estimators": [500],
+            "bootstrap": [False],
+            "max_features": [1.0],
+            "min_samples_split": [2],
+            "max_depth": [16, 18, 20, 22],
+            "min_samples_leaf": [4, 6, 8],
+        },
+        {
+            "criterion": ["poisson"],
+            "n_estimators": [500],
+            "bootstrap": [False],
+            "max_features": [1.0],
+            "min_samples_split": [2],
+            "max_depth": [24, 26, 30, None],
+            "min_samples_leaf": [1, 2, 3],
+        },
+    ]
 
-    grid_et_c = run_grouped_grid_search(
+    grid_et_boundary = run_grouped_grid_search(
         model=ExtraTreesRegressor(
-            max_depth=23,
-            min_samples_leaf=3,
-            min_samples_split=2,
-            max_features=1.0,
+            random_state=42,
+            n_jobs=1,
         ),
-        param_grid=param_grid_et_c,
+        param_grid=param_grid_et_boundary,
         X=X_cv_et,
         y=y_cv,
         groups=groups_cv,
         cv=cv,
     )
 
-    grid_et_c_results_df = pd.DataFrame(grid_et_c.cv_results_).round(3)
-    grid_et_c_results_df
+    grid_et_boundary_results_df = process_grid_search_results(
+        grid_et_boundary, "results/et_boundary_results.csv"
+    )
+    grid_et_boundary_results_df
+
+    notify_done()
+    return
+
+
+@app.cell(disabled=True)
+def _(
+    ExtraTreesRegressor,
+    X_cv_et,
+    cv,
+    groups_cv,
+    notify_done,
+    process_grid_search_results,
+    run_grouped_grid_search,
+    y_cv,
+):
+    param_grid_et_absolute_boundary = {
+        "criterion": ["absolute_error"],
+        "n_estimators": [500],
+        "bootstrap": [False],
+        "max_features": [1.0],
+        "min_samples_split": [2],
+        "max_depth": [10, 12, 14, 16],
+        "min_samples_leaf": [4, 6, 8],
+    }
+
+    grid_et_absolute_boundary = run_grouped_grid_search(
+        model=ExtraTreesRegressor(
+            random_state=42,
+            n_jobs=1,
+        ),
+        param_grid=param_grid_et_absolute_boundary,
+        X=X_cv_et,
+        y=y_cv,
+        groups=groups_cv,
+        cv=cv,
+    )
+
+    grid_et_absolute_boundary_results_df = process_grid_search_results(
+        grid_et_absolute_boundary, "results/et_absolute_boundary_results.csv"
+    )
+    grid_et_absolute_boundary_results_df
+
+    notify_done()
     return
 
 
 @app.cell
-def _(
-    X_train_after_ablation,
-    X_validation_after_ablation,
-    evaluate_model,
-    final_evaluation_models,
-    notify_done,
-    pd,
-    y_train,
-    y_validation,
-):
-    final_evaluation_results = []
+def _(pd):
+    et_finalists = [
+        {
+            "Model": "ExtraTrees",
+            "Profile": "absolute_error",
+            "MAE": 9.371,
+            "RMSE": 14.495,
+            "overestimation_rate": 0.413,
+            "mean_signed_error": 1.524,
+            "mean_overestimation": 13.159,
+            "params": {
+                "n_estimators": 500,
+                "criterion": "absolute_error",
+                "max_depth": 16,
+                "min_samples_leaf": 6,
+                "min_samples_split": 2,
+                "max_features": 1.0,
+                "bootstrap": False,
+                "random_state": 42,
+            },
+        },
+        {
+            "Model": "ExtraTrees",
+            "Profile": "poisson",
+            "MAE": 9.880,
+            "RMSE": 14.217,
+            "overestimation_rate": 0.397,
+            "mean_signed_error": -0.017,
+            "mean_overestimation": 12.404,
+            "params": {
+                "n_estimators": 1000,
+                "criterion": "poisson",
+                "max_depth": 26,
+                "min_samples_leaf": 2,
+                "min_samples_split": 2,
+                "max_features": 1.0,
+                "bootstrap": False,
+                "random_state": 42,
+            },
+        },
+    ]
 
-    for _name, _model in final_evaluation_models.items():
-        _metrics = evaluate_model(
-            _model,
-            X_train_after_ablation,
-            X_validation_after_ablation,
-            y_train,
-            y_validation,
+    et_finalists_df = pd.DataFrame(et_finalists)
+
+    et_finalists_df
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    # RANDOM FOREST
+    """)
+    return
+
+
+@app.cell(disabled=True)
+def _(
+    RandomForestRegressor,
+    X_cv_full,
+    cv,
+    groups_cv,
+    notify_done,
+    process_grid_search_results,
+    run_grouped_grid_search,
+    y_cv,
+):
+    param_grid_rf_coarse = {
+        "max_depth": [12, 16, 20, None],
+        "min_samples_leaf": [1, 2, 4],
+        "max_features": [0.5, 0.75, 1.0],
+    }
+
+    grid_rf_coarse = run_grouped_grid_search(
+        model=RandomForestRegressor(
+            random_state=42,
+            n_jobs=1,
+        ),
+        param_grid=param_grid_rf_coarse,
+        X=X_cv_full,
+        y=y_cv,
+        groups=groups_cv,
+        cv=cv,
+    )
+
+    grid_rf_coarse_result_df = process_grid_search_results(
+        grid_rf_coarse, "results/rf_coarse_results.csv"
+    )
+    grid_rf_coarse_result_df
+
+    notify_done()
+    return
+
+
+@app.cell(disabled=True)
+def _(RandomForestRegressor):
+    rf_ablation_model = RandomForestRegressor(
+        n_estimators=300,
+        max_depth=16,
+        min_samples_leaf=2,
+        max_features=0.5,
+        random_state=42,
+        n_jobs=-1,
+    )
+    return (rf_ablation_model,)
+
+
+@app.cell(disabled=True)
+def _(
+    cv,
+    df_train_temporal,
+    evaluate_grouped_cv,
+    feature_sets,
+    groups_cv,
+    notify_done,
+    rf_ablation_model,
+    y_cv,
+):
+    feature_set_results_rf = []
+
+    for _name, _features in feature_sets.items():
+        _metrics = evaluate_grouped_cv(
+            model=rf_ablation_model,
+            X=df_train_temporal[_features],
+            y=y_cv,
+            groups=groups_cv,
+            cv=cv,
         )
 
-        final_evaluation_results.append(
+        feature_set_results_rf.append(
             {
-                "model": _name,
+                "feature_set": _name,
+                "n_features": len(_features),
                 **_metrics,
             }
         )
 
     notify_done()
+    return (feature_set_results_rf,)
 
-    pd.DataFrame(final_evaluation_results).sort_values("mae_validation").round(3)
-    return (final_evaluation_results,)
+
+@app.cell(disabled=True)
+def _(feature_set_results_rf, pd):
+    feature_set_results_rf_df = pd.DataFrame(feature_set_results_rf)
+
+    feature_set_results_rf_df.round(3)
+    return
 
 
 @app.cell
-def _(final_evaluation_results, y_validation):
-    error_gb = final_evaluation_results[0]["y_pred_validation"] - y_validation
-    error_et = final_evaluation_results[1]["y_pred_validation"] - y_validation
-    return error_et, error_gb
+def _(df_train_temporal, feature_sets):
+    final_feature_set_rf = feature_sets["no_means_no_deltas"]
+
+    X_cv_rf = df_train_temporal[final_feature_set_rf]
+    return (X_cv_rf,)
+
+
+@app.cell(disabled=True)
+def _(
+    RandomForestRegressor,
+    X_cv_rf,
+    cv,
+    groups_cv,
+    process_grid_search_results,
+    run_grouped_grid_search,
+    y_cv,
+):
+    param_grid_rf_a = {
+        "max_depth": [10, 14, 18, 22, None],
+        "min_samples_leaf": [1, 2, 4, 6],
+        "min_samples_split": [2, 4, 8],
+        "max_features": [0.25, 0.4, 0.55, 0.7],
+    }
+
+    grid_rf_a = run_grouped_grid_search(
+        model=RandomForestRegressor(
+            random_state=42,
+            n_jobs=1,
+            n_estimators=300,
+        ),
+        param_grid=param_grid_rf_a,
+        X=X_cv_rf,
+        y=y_cv,
+        groups=groups_cv,
+        cv=cv,
+    )
+
+    grid_rf_a_results_df = process_grid_search_results(
+        grid_rf_a, "results/RandomForest/rf_tuning_a_results"
+    )
+    grid_rf_a_results_df
+    return
+
+
+@app.cell(disabled=True)
+def _(
+    RandomForestRegressor,
+    X_cv_rf,
+    cv,
+    groups_cv,
+    notify_done,
+    process_grid_search_results,
+    run_grouped_grid_search,
+    y_cv,
+):
+    param_grid_rf_a_boundary = {
+        "max_depth": [
+            14,
+            18,
+            22,
+            None,
+        ],
+        "min_samples_leaf": [
+            2,
+            4,
+            6,
+        ],
+        "max_features": [
+            0.70,
+            0.85,
+            1.0,
+        ],
+    }
+
+    grid_rf_a_boundary = run_grouped_grid_search(
+        model=RandomForestRegressor(
+            n_estimators=300,
+            random_state=42,
+            n_jobs=1,
+            min_samples_leaf=2,
+        ),
+        param_grid=param_grid_rf_a_boundary,
+        X=X_cv_rf,
+        y=y_cv,
+        groups=groups_cv,
+        cv=cv,
+    )
+
+    grid_rf_a_boundary_results_df = process_grid_search_results(
+        grid_rf_a_boundary, "results/RandomForest/rf_tuning_a_boundary_result"
+    )
+    grid_rf_a_boundary_results_df
+    notify_done()
+    return
+
+
+@app.cell(disabled=True)
+def _(
+    RandomForestRegressor,
+    X_cv_rf,
+    cv,
+    groups_cv,
+    notify_done,
+    process_grid_search_results,
+    run_grouped_grid_search,
+    y_cv,
+):
+    param_grid_rf_b = [
+        # No bootstrap
+        {
+            "criterion": [
+                "squared_error",
+                "absolute_error",
+                "poisson",
+            ],
+            "max_depth": [14, 18, None],
+            "min_samples_leaf": [2, 4],
+            "max_features": [0.70, 0.85, 1.0],
+            "bootstrap": [False],
+        },
+        # Bootstrap
+        {
+            "criterion": [
+                "squared_error",
+                "absolute_error",
+                "poisson",
+            ],
+            "max_depth": [14, 18, None],
+            "min_samples_leaf": [2, 4],
+            "max_features": [0.70, 0.85, 1.0],
+            "bootstrap": [True],
+            "max_samples": [0.70, 0.85, 1.0],
+        },
+    ]
+
+    grid_rf_b = run_grouped_grid_search(
+        model=RandomForestRegressor(
+            n_estimators=300,
+            min_samples_leaf=2,
+            random_state=42,
+            n_jobs=1,
+        ),
+        param_grid=param_grid_rf_b,
+        X=X_cv_rf,
+        y=y_cv,
+        groups=groups_cv,
+        cv=cv,
+    )
+
+    grid_rf_b_results_df = process_grid_search_results(
+        grid_rf_b, "results/RandomForest/rf_tuning_b_results"
+    )
+    grid_rf_b_results_df
+
+    notify_done()
+    return
+
+
+@app.cell(disabled=True)
+def _(
+    RandomForestRegressor,
+    X_cv_rf,
+    cv,
+    groups_cv,
+    notify_done,
+    process_grid_search_results,
+    run_grouped_grid_search,
+    y_cv,
+):
+    rf_finalist_params = [
+        {
+            "criterion": ["absolute_error"],
+            "max_depth": [14],
+            "min_samples_leaf": [4],
+            "min_samples_split": [2],
+            "max_features": [0.70],
+            "bootstrap": [True],
+            "max_samples": [1.0],
+            "n_estimators": [300, 500],
+        },
+        {
+            "criterion": ["poisson"],
+            "max_depth": [18],
+            "min_samples_leaf": [2],
+            "min_samples_split": [2],
+            "max_features": [0.70],
+            "bootstrap": [True],
+            "max_samples": [1.0],
+            "n_estimators": [300, 500, 1000],
+        },
+    ]
+
+    grid_rf_estimators_tuning = run_grouped_grid_search(
+        model=RandomForestRegressor(
+            random_state=42,
+            n_jobs=1,
+        ),
+        param_grid=rf_finalist_params,
+        X=X_cv_rf,
+        y=y_cv,
+        groups=groups_cv,
+        cv=cv,
+    )
+
+    grid_rf_estimators_tuning_results_df = process_grid_search_results(
+        grid_rf_estimators_tuning, "results/RandomForest/rf_estimators_tuning"
+    )
+    grid_rf_estimators_tuning_results_df
+
+    notify_done()
+    return
+
+
+@app.cell(disabled=True)
+def _(pd):
+    rf_finalists = [
+        {
+            "Model": "RandomForest",
+            "Profile": "absolute_error",
+            "MAE": 9.528693,
+            "RMSE": 14.845954,
+            "overestimation_rate": 0.408963,
+            "mean_signed_error": 1.433922,
+            "mean_overestimation": 13.382428,
+            "params": {
+                "n_estimators": 300,
+                "criterion": "absolute_error",
+                "max_depth": 14,
+                "min_samples_leaf": 4,
+                "min_samples_split": 2,
+                "max_features": 0.70,
+                "bootstrap": True,
+                "max_samples": 1.0,
+                "random_state": 42,
+            },
+        },
+        {
+            "Model": "RandomForest",
+            "Profile": "poisson",
+            "MAE": 9.842720,
+            "RMSE": 14.325350,
+            "overestimation_rate": 0.391151,
+            "mean_signed_error": -0.055939,
+            "mean_overestimation": 12.482731,
+            "params": {
+                "n_estimators": 500,
+                "criterion": "poisson",
+                "max_depth": 18,
+                "min_samples_leaf": 2,
+                "min_samples_split": 2,
+                "max_features": 0.70,
+                "bootstrap": True,
+                "max_samples": 1.0,
+                "random_state": 42,
+            },
+        },
+    ]
+
+    rf_finalists_df = pd.DataFrame(rf_finalists)
+    rf_finalists_df
+    return
 
 
 @app.cell
-def _(error_et, error_gb):
-    overestimation_rate_gb = (error_gb > 0).mean()
-    overestimation_rate_et = (error_et > 0).mean()
+def _(mo):
+    mo.md(r"""
+    # XGBoost
+    """)
+    return
 
-    mean_signed_error_gb = error_gb.mean()
-    mean_signed_error_et = error_et.mean()
 
-    mean_overestimations_gb = error_gb[error_gb > 0].mean()
-    mean_overestimations_et = error_et[error_et > 0].mean()
+@app.cell(disabled=True)
+def _():
+    param_grids_xgb_coarse = [
+        {
+            "learning_rate": [0.10],
+            "n_estimators": [300],
+            "max_depth": [3, 5, 7],
+            "min_child_weight": [1, 5],
+            "subsample": [0.8, 1.0],
+            "colsample_bytree": [0.7, 1.0],
+        },
+        {
+            "learning_rate": [0.05],
+            "n_estimators": [500],
+            "max_depth": [3, 5, 7],
+            "min_child_weight": [1, 5],
+            "subsample": [0.8, 1.0],
+            "colsample_bytree": [0.7, 1.0],
+        },
+        {
+            "learning_rate": [0.03],
+            "n_estimators": [800],
+            "max_depth": [3, 5, 7],
+            "min_child_weight": [1, 5],
+            "subsample": [0.8, 1.0],
+            "colsample_bytree": [0.7, 1.0],
+        },
+    ]
+    return (param_grids_xgb_coarse,)
+
+
+@app.cell
+def _(
+    Path,
+    XGBRegressor,
+    X_cv_full,
+    cv,
+    datetime,
+    groups_cv,
+    param_grids_xgb_coarse,
+    process_grid_search_results,
+    run_grouped_grid_search,
+    time,
+    y_cv,
+):
+    checkpoint_dir_xgb_coarse = Path("results/XGBoost/xgb_coarse_results")
+    checkpoint_dir_xgb_coarse.mkdir(parents=True, exist_ok=True)
+
+    for _profile in param_grids_xgb_coarse:
+        _profile_id = (
+            f"xgb_coarse_lr{str(_profile['learning_rate']).replace('.', '')}"
+            f"_n{_profile['n_estimators']}"
+        )
+
+        _checkpoint_path = checkpoint_dir_xgb_coarse / f"{_profile_id}.csv"
+        _running_path = checkpoint_dir_xgb_coarse / f"{_profile_id}.running"
+        _param_grid = {
+            key: value if isinstance(value, list) else [value]
+            for key, value in _profile.items()
+        }
+
+        print(
+            f"\n{'=' * 70}\n[START] {_profile_id}\n{datetime.now():%Y-%m-%d %H:%M:%S}\n"
+        )
+
+        _running_path.write_text(f"Started : {datetime.now().isoformat()}")
+
+        _start_time = time.perf_counter()
+
+        _grid_xgb_coarse = run_grouped_grid_search(
+            model=XGBRegressor(
+                random_state=42,
+                n_jobs=1,
+            ),
+            param_grid=_param_grid,
+            X=X_cv_full,
+            y=y_cv,
+            groups=groups_cv,
+            cv=cv,
+        )
+
+        _grid_xgb_coarse_results_df = process_grid_search_results(
+            _grid_xgb_coarse, _checkpoint_path
+        )
+
+        _elapsed = time.perf_counter() - _start_time
+
+        print(
+            f"[DONE] {_profile_id}\n"
+            f"Duration: {_elapsed / 60:.1f} min\n"
+            f"Checkpoint: {_checkpoint_path}"
+        )
+    return
+
+
+@app.function
+def ensure_grid_search_format(params):
+    return {
+        key: value if isinstance(value, list) else [value]
+        for key, value in params.items()
+    }
+
+
+@app.cell
+def _():
+    xgb_screening_structures = [
+        {
+            "profile": "balanced_depth5",
+            "max_depth": 5,
+            "min_child_weight": 1,
+            "subsample": 0.8,
+            "colsample_bytree": 1.0,
+        },
+        {
+            "profile": "accuracy_depth7",
+            "max_depth": 7,
+            "min_child_weight": 5,
+            "subsample": 0.8,
+            "colsample_bytree": 1.0,
+        },
+    ]
+    return (xgb_screening_structures,)
+
+
+@app.cell
+def _(np):
+    def make_asymmetric_mse(overestimation_weights):
+        def asymetric_mse(y_true, y_pred):
+            error = y_pred - y_true
+
+            weights = np.where(
+                error > 0,
+                overestimation_weights,
+                1.0,
+            )
+
+            grad = weights * error
+            hess = weights
+
+            return grad, hess
+
+        return asymetric_mse
+
+    return (make_asymmetric_mse,)
+
+
+@app.cell
+def _(make_asymmetric_mse):
+    xgb_objective_profiles = {
+        "squared_error": {
+            "objective": "reg:squarederror",
+        },
+        "absolute_error": {
+            "objective": "reg:absoluteerror",
+        },
+        "huber_0.5": {
+            "objective": "reg:pseudohubererror",
+            "huber_slope": 0.5,
+        },
+        "huber_1.0": {
+            "objective": "reg:pseudohubererror",
+            "huber_slope": 1.0,
+        },
+        "huber_2.0": {
+            "objective": "reg:pseudohubererror",
+            "huber_slope": 2.0,
+        },
+        "quantile_045": {
+            "objective": "reg:quantileerror",
+            "quantile_alpha": 0.45,
+        },
+        "quantile_040": {
+            "objective": "reg:quantileerror",
+            "quantile_alpha": 0.40,
+        },
+        "quantile_035": {
+            "objective": "reg:quantileerror",
+            "quantile_alpha": 0.35,
+        },
+        "quantile_030": {
+            "objective": "reg:quantileerror",
+            "quantile_alpha": 0.30,
+        },
+        "asym_125": {
+            "objective": make_asymmetric_mse(1.25),
+        },
+        "asym_150": {
+            "objective": make_asymmetric_mse(1.50),
+        },
+        "asym_200": {
+            "objective": make_asymmetric_mse(2.00),
+        },
+        "asym_300": {
+            "objective": make_asymmetric_mse(3.00),
+        },
+    }
+    return (xgb_objective_profiles,)
+
+
+@app.cell
+def _(xgb_objective_profiles, xgb_screening_structures):
+    xgb_objective_runs = {}
+
+    for _structure in xgb_screening_structures:
+        _structure_name = _structure["profile"]
+
+        for _objective_name, _objective in xgb_objective_profiles.items():
+            _model_params = {
+                "objective": _objective["objective"],
+            }
+
+            if "huber_slope" in _objective:
+                _model_params["huber_slope"] = _objective["huber_slope"]
+
+            if "quantile_alpha" in _objective:
+                _model_params["quantile_alpha"] = _objective["quantile_alpha"]
+
+            _param_grid = {
+                "max_depth": _structure["max_depth"],
+                "min_child_weight": _structure["min_child_weight"],
+                "subsample": _structure["subsample"],
+                "colsample_bytree": _structure["colsample_bytree"],
+            }
+
+            _profile_id = f"{_structure_name}_{_objective_name}"
+
+            xgb_objective_runs[_profile_id] = {
+                "objective_name": _objective_name,
+                "model_params": _model_params,
+                "param_grid": _param_grid,
+            }
+    return (xgb_objective_runs,)
+
+
+@app.cell(disabled=True)
+def _(
+    Path,
+    XGBRegressor,
+    X_cv_full,
+    cv,
+    datetime,
+    groups_cv,
+    process_grid_search_results,
+    run_grouped_grid_search,
+    time,
+    xgb_objective_runs,
+    y_cv,
+):
+    checkpoint_dir_xgb_objectives = Path("results/XGBoost/xgb_objectives_results")
+
+    checkpoint_dir_xgb_objectives.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    xgb_objectives_results = []
+
+    for _name, _config in xgb_objective_runs.items():
+        _profile_id = _name
+
+        _model_params = _config["model_params"]
+
+        _param_grid = ensure_grid_search_format(_config["param_grid"])
+
+        _checkpoint_path = checkpoint_dir_xgb_objectives / f"{_profile_id}.csv"
+
+        _running_path = checkpoint_dir_xgb_objectives / f"{_profile_id}.running"
+
+        print(
+            f"\n{'=' * 70}\n"
+            f"[START] {_profile_id}\n"
+            f"{datetime.now():%Y-%m-%d %H:%M:%S}\n"
+            f"{'=' * 70}"
+        )
+
+        _running_path.write_text(f"Started: {datetime.now().isoformat()}")
+
+        _start_time = time.perf_counter()
+
+        _model = XGBRegressor(
+            random_state=42,
+            n_jobs=1,
+            learning_rate=0.03,
+            n_estimators=800,
+            tree_method="hist",
+            **_model_params,
+        )
+
+        if _config["objective_name"].startswith("asym_"):
+            assert callable(_model.get_params()["objective"])
+
+        _grid_xgb_objectives = run_grouped_grid_search(
+            model=_model,
+            param_grid=_param_grid,
+            X=X_cv_full,
+            y=y_cv,
+            groups=groups_cv,
+            cv=cv,
+        )
+
+        _results = process_grid_search_results(
+            _grid_xgb_objectives,
+            _checkpoint_path,
+        )
+
+        _results["objective_profile"] = _config["objective_name"]
+
+        _results["structure_profile"] = _profile_id.removesuffix(
+            f"_{_config['objective_name']}"
+        )
+
+        _results.to_csv(
+            _checkpoint_path,
+            index=False,
+        )
+
+        xgb_objectives_results.append(_results)
+
+        if _running_path.exists():
+            _running_path.unlink()
+
+        _elapsed = time.perf_counter() - _start_time
+
+        print(
+            f"[DONE] {_profile_id}\n"
+            f"Duration: {_elapsed / 60:.1f} min\n"
+            f"Checkpoint: {_checkpoint_path}"
+        )
+    return
+
+
+@app.cell
+def _(concat_csv_folder, notify_done):
+    xgb_objectives_tuning_results_df = concat_csv_folder(
+        "results/XGBoost/xgb_objectives_results",
+        "results/XGBoost/xgb_objectives_tuning_results.csv",
+    )
+
+    xgb_objectives_tuning_results_df.round(3)
+
+    notify_done()
+    return
+
+
+@app.cell
+def _(make_asymmetric_mse):
+    xgb_ablation_profiles = {
+        "accuracy": {
+            "objective": "reg:pseudohubererror",
+            "huber_slope": 0.5,
+            "max_depth": 7,
+            "min_child_weight": 5,
+        },
+        "balanced_quantile": {
+            "objective": "reg:quantileerror",
+            "quantile_alpha": 0.45,
+            "max_depth": 5,
+            "min_child_weight": 1,
+        },
+        "asymmetric": {
+            "objective": make_asymmetric_mse(3.0),
+            "max_depth": 5,
+            "min_child_weight": 1,
+        },
+        "conservative_quantile": {
+            "objective": "reg:quantileerror",
+            "quantile_alpha": 0.40,
+            "max_depth": 5,
+            "min_child_weight": 1,
+        },
+    }
+    return (xgb_ablation_profiles,)
+
+
+@app.cell
+def _(
+    XGBRegressor,
+    cv,
+    df_train_temporal,
+    evaluate_grouped_cv,
+    feature_sets,
+    groups_cv,
+    notify_done,
+    xgb_ablation_profiles,
+    y_cv,
+):
+    feature_set_results_xgb = []
+
+    for _profile_name, _specs in xgb_ablation_profiles.items():
+        _model_params = {
+            "objective": _specs["objective"],
+            "max_depth": _specs["max_depth"],
+            "min_child_weight": _specs["min_child_weight"],
+        }
+
+        if "huber_slope" in _specs:
+            _model_params["huber_slope"] = _specs["huber_slope"]
+
+        if "quantile_alpha" in _specs:
+            _model_params["quantile_alpha"] = _specs["quantile_alpha"]
+
+        _model = XGBRegressor(
+            tree_method="hist",
+            n_jobs=1,
+            learning_rate=0.03,
+            n_estimators=800,
+            subsample=0.8,
+            colsample_bytree=1.0,
+            random_state=42,
+            **_model_params,
+        )
+
+        for _name, _features in feature_sets.items():
+            _metrics = evaluate_grouped_cv(
+                model=_model,
+                X=df_train_temporal[_features],
+                y=y_cv,
+                groups=groups_cv,
+                cv=cv,
+            )
+
+            feature_set_results_xgb.append(
+                {
+                    "feature_set": _name,
+                    "ablation_profiles": _profile_name,
+                    "n_features": len(_features),
+                    **_metrics,
+                }
+            )
+
+    notify_done()
+    return (feature_set_results_xgb,)
+
+
+@app.cell
+def _(feature_set_results_xgb, pd):
+    feature_set_results_xgb_df = pd.DataFrame(feature_set_results_xgb)
+
+    feature_set_results_xgb_df.round(3)
+    return
+
+
+@app.cell
+def _(df_train_temporal, feature_sets):
+    final_feature_set_xgb_accuracy = feature_sets["no_means"]
+
+    final_feature_set_xgb_asymmetric = feature_sets["no_means"]
+
+    final_feature_set_xgb_quantile = feature_sets["no_means_no_deltas"]
+
+    X_cv_xgb_accuracy = df_train_temporal[final_feature_set_xgb_accuracy]
+
+    X_cv_xgb_asymmetric = df_train_temporal[final_feature_set_xgb_asymmetric]
+
+    X_cv_xgb_quantile = df_train_temporal[final_feature_set_xgb_quantile]
+    return X_cv_xgb_accuracy, X_cv_xgb_asymmetric, X_cv_xgb_quantile
+
+
+@app.cell
+def _():
+    param_grid_xgb_a_accuracy = {
+        "max_depth": [5, 6, 7, 8],
+        "min_child_weight": [3, 5, 8],
+        "subsample": [0.7, 0.8, 0.9],
+        "colsample_bytree": [0.85, 1.0],
+    }
+
+    param_grid_xgb_a_risk = {
+        "max_depth": [4, 5, 6, 7],
+        "min_child_weight": [0.5, 1, 2, 4],
+        "subsample": [0.7, 0.8, 0.9],
+        "colsample_bytree": [0.85, 1.0],
+    }
+    return param_grid_xgb_a_accuracy, param_grid_xgb_a_risk
+
+
+@app.cell
+def _(
+    X_cv_xgb_accuracy,
+    X_cv_xgb_asymmetric,
+    X_cv_xgb_quantile,
+    make_asymmetric_mse,
+    param_grid_xgb_a_accuracy,
+    param_grid_xgb_a_risk,
+):
+    tuning_a_profiles = ("accuracy_huber", "balanced_quantile", "asymmetric")
+
+    xgb_tuning_a_runs = {}
+
+    for _profile in tuning_a_profiles:
+        if "accuracy_huber" in _profile:
+            _model_params = {
+                "objective": "reg:pseudohubererror",
+                "huber_slope": 0.5,
+            }
+
+            _param_grid = param_grid_xgb_a_accuracy
+
+            _X_cv = X_cv_xgb_accuracy
+
+        if "balanced_quantile" in _profile:
+            _model_params = {
+                "objective": "reg:quantileerror",
+                "quantile_alpha": 0.45,
+            }
+
+            _param_grid = param_grid_xgb_a_risk
+
+            _X_cv = X_cv_xgb_quantile
+
+        if "asymmetric" in _profile:
+            _model_params = {
+                "objective": make_asymmetric_mse(3.0),
+            }
+
+            _param_grid = param_grid_xgb_a_risk
+
+            _X_cv = X_cv_xgb_asymmetric
+
+        xgb_tuning_a_runs[_profile] = {
+            "model_params": _model_params,
+            "param_grid": _param_grid,
+            "X_cv": _X_cv,
+        }
+    return tuning_a_profiles, xgb_tuning_a_runs
+
+
+@app.cell
+def _(
+    Path,
+    XGBRegressor,
+    cv,
+    datetime,
+    groups_cv,
+    notify_done,
+    process_grid_search_results,
+    run_grouped_grid_search,
+    time,
+    xgb_tuning_a_runs,
+    y_cv,
+):
+    checkpoint_dir_xgb_tuning_a = Path("results/XGBoost/xgb_tuning_a_results")
+
+    checkpoint_dir_xgb_tuning_a.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    xgb_tuning_a_results = []
+
+    for _name, _config in xgb_tuning_a_runs.items():
+        _profile_id = _name
+        _model_params = _config["model_params"]
+        _param_grid = ensure_grid_search_format(_config["param_grid"])
+        _X_cv = _config["X_cv"]
+
+        _checkpoint_path = checkpoint_dir_xgb_tuning_a / f"{_profile_id}.csv"
+
+        _running_path = checkpoint_dir_xgb_tuning_a / f"{_profile_id}.running"
+
+        print(
+            f"\n{'=' * 70}\n"
+            f"[START] {_profile_id}\n"
+            f"{datetime.now():%Y-%m-%d %H:%M:%S}\n"
+            f"{'=' * 70}"
+        )
+
+        _running_path.write_text(f"Started: {datetime.now().isoformat()}")
+
+        _start_time = time.perf_counter()
+
+        _model = XGBRegressor(
+            learning_rate=0.03,
+            n_estimators=800,
+            random_state=42,
+            n_jobs=1,
+            tree_method="hist",
+            **_model_params,
+        )
+
+        _grid_xgb_tuning_a = run_grouped_grid_search(
+            model=_model,
+            param_grid=_param_grid,
+            X=_X_cv,
+            y=y_cv,
+            groups=groups_cv,
+            cv=cv,
+        )
+
+        _results = process_grid_search_results(
+            _grid_xgb_tuning_a,
+            _checkpoint_path,
+        )
+
+        _results.to_csv(
+            _checkpoint_path,
+            index=False,
+        )
+
+        xgb_tuning_a_results.append(_results)
+
+        if _running_path.exists():
+            _running_path.unlink()
+
+        _elapsed = time.perf_counter() - _start_time
+
+        print(
+            f"[DONE] {_profile_id}\n"
+            f"Duration: {_elapsed / 60:.1f} min\n"
+            f"Checkpoint: {_checkpoint_path}"
+        )
+
+    notify_done()
+    return
+
+
+@app.cell
+def _():
+    xgb_a_boundary_grids = {
+        "accuracy_huber": {
+            "max_depth": [7, 8, 9],
+            "min_child_weight": [8, 12, 16],
+            "subsample": [0.5, 0.6, 0.7],
+            "colsample_bytree": [1.0],
+        },
+        "balanced_quantile": {
+            "max_depth": [5, 6, 7],
+            "min_child_weight": [2, 4, 8],
+            "subsample": [0.5, 0.6, 0.7],
+            "colsample_bytree": [0.85, 1.0],
+        },
+        "asymmetric": {
+            "max_depth": [7, 8, 9],
+            "min_child_weight": [2, 4, 8],
+            "subsample": [0.7, 0.8],
+            "colsample_bytree": [0.70, 0.85, 1.0],
+        },
+    }
+    return (xgb_a_boundary_grids,)
+
+
+@app.cell
+def _(
+    X_cv_xgb_accuracy,
+    X_cv_xgb_asymmetric,
+    X_cv_xgb_quantile,
+    make_asymmetric_mse,
+    tuning_a_profiles,
+    xgb_a_boundary_grids,
+):
+    xgb_a_boundary_runs = {}
+
+    for _profile in tuning_a_profiles:
+        _param_grid = xgb_a_boundary_grids[_profile]
+
+        if "accuracy_huber" in _profile:
+            _model_params = {
+                "objective": "reg:pseudohubererror",
+                "huber_slope": 0.5,
+            }
+
+            _X_cv = X_cv_xgb_accuracy
+
+        if "balanced_quantile" in _profile:
+            _model_params = {
+                "objective": "reg:quantileerror",
+                "quantile_alpha": 0.45,
+            }
+
+            _X_cv = X_cv_xgb_quantile
+
+        if "asymmetric" in _profile:
+            _model_params = {
+                "objective": make_asymmetric_mse(3.0),
+            }
+
+            _X_cv = X_cv_xgb_asymmetric
+
+        xgb_a_boundary_runs[_profile] = {
+            "model_params": _model_params,
+            "param_grid": _param_grid,
+            "X_cv": _X_cv,
+        }
+    return (xgb_a_boundary_runs,)
+
+
+@app.cell
+def _(
+    ParameterGrid,
+    Path,
+    XGBRegressor,
+    cv,
+    datetime,
+    groups_cv,
+    notify_done,
+    pd,
+    process_grid_search_results,
+    run_grouped_grid_search,
+    time,
+    xgb_a_boundary_runs,
+    y_cv,
+):
+    checkpoint_dir_xgb_a_boundary = Path("results/XGBoost/xgb_a_boundary_results")
+
+    checkpoint_dir_xgb_a_boundary.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    xgb_a_boundary_results = []
+
+    for _name, _config in xgb_a_boundary_runs.items():
+        _profile_id = _name
+        _model_params = _config["model_params"]
+        _param_grid = ensure_grid_search_format(_config["param_grid"])
+        _X_cv = _config["X_cv"]
+
+        _checkpoint_path = (
+            checkpoint_dir_xgb_a_boundary / f"xgb_a_boundary_{_profile_id}.csv"
+        )
+
+        _running_path = (
+            checkpoint_dir_xgb_a_boundary / f"xgb_a_boundary_{_profile_id}.running"
+        )
+
+        if _checkpoint_path.exists():
+            _existing = pd.read_csv(_checkpoint_path)
+
+            _expected_rows = len(list(ParameterGrid(_param_grid)))
+
+            if len(_existing) == _expected_rows:
+                print(
+                    f"[SKIP] {_profile_id} ({len(_existing)}/{_expected_rows} results)"
+                )
+
+                xgb_a_boundary_results.append(_existing)
+
+                if _running_path.exists():
+                    _running_path.unlink()
+
+                continue
+
+            print(
+                f"[INVALID CHECKPOINT] {_profile_id} "
+                f"({len(_existing)}/{_expected_rows} results) "
+                "-> recompute"
+            )
+
+        print(
+            f"\n{'=' * 70}\n"
+            f"[START] {_profile_id}\n"
+            f"{datetime.now():%Y-%m-%d %H:%M:%S}\n"
+            f"{'=' * 70}"
+        )
+
+        _running_path.write_text(f"Started: {datetime.now().isoformat()}")
+
+        _start_time = time.perf_counter()
+
+        _model = XGBRegressor(
+            learning_rate=0.03,
+            n_estimators=800,
+            random_state=42,
+            n_jobs=1,
+            tree_method="hist",
+            **_model_params,
+        )
+
+        _grid_xgb_a_boundary = run_grouped_grid_search(
+            model=_model,
+            param_grid=_param_grid,
+            X=_X_cv,
+            y=y_cv,
+            groups=groups_cv,
+            cv=cv,
+        )
+
+        _results = process_grid_search_results(
+            _grid_xgb_a_boundary,
+            _checkpoint_path,
+        )
+
+        _results.to_csv(
+            _checkpoint_path,
+            index=False,
+        )
+
+        xgb_a_boundary_results.append(_results)
+
+        if _running_path.exists():
+            _running_path.unlink()
+
+        _elapsed = time.perf_counter() - _start_time
+
+        print(
+            f"[DONE] {_profile_id}\n"
+            f"Duration: {_elapsed / 60:.1f} min\n"
+            f"Checkpoint: {_checkpoint_path}"
+        )
+
+    notify_done()
+    return
+
+
+@app.cell
+def _():
+    param_grid_xgb_quantile_boundary_2 = {
+        "max_depth": [7, 8, 9],
+        "min_child_weight": [8, 12, 16],
+        "subsample": [0.7],
+        "colsample_bytree": [1.0],
+    }
+
+    param_grid_xgb_asymmetric_boundary_2 = {
+        "max_depth": [9, 10, 11],
+        "min_child_weight": [4],
+        "subsample": [0.7],
+        "colsample_bytree": [1.0],
+    }
     return (
-        mean_overestimations_et,
-        mean_overestimations_gb,
-        mean_signed_error_et,
-        mean_signed_error_gb,
-        overestimation_rate_et,
-        overestimation_rate_gb,
+        param_grid_xgb_asymmetric_boundary_2,
+        param_grid_xgb_quantile_boundary_2,
     )
 
 
 @app.cell
 def _(
-    mean_overestimations_et,
-    mean_overestimations_gb,
-    mean_signed_error_et,
-    mean_signed_error_gb,
-    overestimation_rate_et,
-    overestimation_rate_gb,
-    pd,
+    XGBRegressor,
+    X_cv_xgb_quantile,
+    cv,
+    groups_cv,
+    param_grid_xgb_quantile_boundary_2,
+    process_grid_search_results,
+    run_grouped_grid_search,
+    y_cv,
 ):
-    pd.DataFrame(
-        {
-            "model": ["Gradient Boosting", "Extra Trees"],
-            "overestimation_rate": [overestimation_rate_gb, overestimation_rate_et],
-            "mean_signed_error": [mean_signed_error_gb, mean_signed_error_et],
-            "mean_overestimation": [mean_overestimations_gb, mean_overestimations_et],
-        }
-    ).round(3)
+    grid_xgb_quantile_boundary_2 = run_grouped_grid_search(
+        model=XGBRegressor(
+            learning_rate=0.03,
+            n_estimators=800,
+            random_state=42,
+            n_jobs=1,
+            tree_method="hist",
+            objective="reg:quantileerror",
+            quantile_alpha=0.45,
+        ),
+        param_grid=param_grid_xgb_quantile_boundary_2,
+        X=X_cv_xgb_quantile,
+        y=y_cv,
+        groups=groups_cv,
+        cv=cv,
+    )
+
+    grid_xgb_quantile_boundary_2_results_df = process_grid_search_results(
+        grid_xgb_quantile_boundary_2,
+        "results/XGBoost/xgb_a_boundary_2_results/quantile_2.csv",
+    )
+    grid_xgb_quantile_boundary_2_results_df
+
     return
-
-
-app._unparsable_cell(
-    r"""
-    loss_quantile_models = {
-        "quantile_0.5" : GradientBoostingRegressor(
-            n_estimators=300
-            learning_rate=0.04
-            max_depth=5
-            min_samples_leaf=5
-            subsample=0.6
-            max_features=1.0
-            random_state=42
-            loss="quantile",
-            alpha=0.5,
-        ),
-        "quantile_0.4" : GradientBoostingRegressor(
-            n_estimators=300
-            learning_rate=0.04
-            max_depth=5
-            min_samples_leaf=5
-            subsample=0.6
-            max_features=1.0
-            random_state=42
-            loss="quantile",
-            alpha=0.4,
-        ),
-        "quantile_0.3" : GradientBoostingRegressor(
-            n_estimators=300
-            learning_rate=0.04
-            max_depth=5
-            min_samples_leaf=5
-            subsample=0.6
-            max_features=1.0
-            random_state=42
-            loss="quantile",
-            alpha=0.3,
-        ),
-    }
-    """,
-    name="_",
-)
 
 
 @app.cell
 def _(
-    X_fold_final,
-    columns_to_display,
+    XGBRegressor,
+    X_cv_xgb_asymmetric,
     cv,
-    et_n_estimators_models,
-    evaluate_grouped_cv,
     groups_cv,
+    make_asymmetric_mse,
     notify_done,
-    pd,
+    param_grid_xgb_asymmetric_boundary_2,
+    process_grid_search_results,
+    run_grouped_grid_search,
     y_cv,
 ):
-    loss_quantile_results = []
+    grid_xgb_boundary_asymmetric_2 = run_grouped_grid_search(
+        model=XGBRegressor(
+            learning_rate=0.03,
+            n_estimators=800,
+            random_state=42,
+            n_jobs=1,
+            tree_method="hist",
+            objective=make_asymmetric_mse(3.0),
+        ),
+        param_grid=param_grid_xgb_asymmetric_boundary_2,
+        X=X_cv_xgb_asymmetric,
+        y=y_cv,
+        groups=groups_cv,
+        cv=cv,
+    )
 
-    for _name, _model in et_n_estimators_models.items():
-        _metrics = evaluate_grouped_cv(
-            _model,
-            X_fold_final,
-            y_cv,
-            groups_cv,
-            cv=cv,
-        )
+    grid_xgb_boundary_asymmetric_2_results_df = process_grid_search_results(
+        grid_xgb_boundary_asymmetric_2,
+        "results/XGBoost/xgb_a_boundary_2_results/asymmetric_2.csv",
+    )
 
-        loss_quantile_results.append(
-            {
-                "configuration": _name,
-                **_metrics,
-            }
-        )
+    grid_xgb_boundary_asymmetric_2_results_df
 
     notify_done()
-
-    pd.DataFrame(loss_quantile_results).sort_values("overestimation_rate")[
-        columns_to_display
-    ].round(3)
     return
 
 
