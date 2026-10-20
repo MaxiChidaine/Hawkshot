@@ -96,3 +96,24 @@ def test_filter_constant_sensors_does_not_modify_input() -> None:
     filter_constant_sensors(df)
 
     pd.testing.assert_frame_equal(df, original_df)
+
+
+def test_load_fd001_rejects_missing_cycles(tmp_path):
+    df = pd.DataFrame(
+        [
+            [1, 1, *([0.0] * 24)],
+            [1, 3, *([0.0] * 24)],
+        ]
+    )
+
+    data_file = tmp_path / "train_FD001.txt"
+
+    df.to_csv(
+        data_file,
+        sep=" ",
+        header=False,
+        index=False,
+    )
+
+    with pytest.raises(ValueError, match="Missing cycles"):
+        load_fd001(tmp_path)

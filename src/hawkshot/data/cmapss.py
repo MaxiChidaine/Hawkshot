@@ -1,5 +1,6 @@
 from pathlib import Path
 import pandas as pd
+from hawkshot.data.validation import validate_engine_trajectories
 
 ID_COLUMNS = ["engine_id", "cycle"]
 
@@ -46,6 +47,8 @@ def load_fd001(data_dir: str | Path) -> pd.DataFrame:
         )
 
     df.columns = COLUMN_NAMES
+
+    validate_engine_trajectories(df)
 
     return df
 
