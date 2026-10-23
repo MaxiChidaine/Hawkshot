@@ -1,6 +1,7 @@
 import hashlib
 import json
 import sklearn
+import math
 
 from importlib.metadata import version
 
@@ -78,7 +79,8 @@ def fingerprint_cv_splits(cv, X, y, groups) -> str:
     """
     splits = []
 
-    for train_indices, validation_indices in cv.split(X, y, groups=groups):
+    split_iterator = cv.split(X, y, groups=groups) if hasattr(cv, "split") else iter(cv)
+    for train_indices, validation_indices in split_iterator:
         splits.append(
             {
                 "train": train_indices.tolist(),
@@ -182,8 +184,8 @@ def build_experiment_manifest(
     experiment = {
         "manifest_schema_version": 1,
         "model": f"{model_module}.{model_class.__qualname__}",
-        "fixed_params": fixed_params,
-        "param_grid": param_grid,
+        "fixed_params": _serialize_grid_value(fixed_params),
+        "param_grid": _serialize_grid_value(param_grid),
         "X_fingerprint": fingerprint_pandas(X),
         "y_fingerprint": fingerprint_pandas(y),
         "groups_fingerprint": fingerprint_pandas(groups),
@@ -203,3 +205,72 @@ def build_experiment_manifest(
         ) from exc
 
     return experiment
+
+
+def _serialize_grid_value(value):
+    """Convert custom objectives into JSON-compatible descriptions."""
+    if isinstance(value, dict):
+        return {key: _serialize_grid_value(item) for key, item in value.items()}
+
+    if isinstance(value, (list, tuple)):
+        return [_serialize_grid_value(item) for item in value]
+
+    if isinstance(value, np.generic):
+        return _serialize_grid_value(value.items())
+
+    if isinstance(value, float) and not math.isfinite(value):
+        if math.isnan(value):
+            kind = "nan"
+        elif value > 0:
+            kind = "+inf"
+        else:
+            kind = "-inf"
+
+        return {"__hawkshot_nonfinite_float__": kind}
+
+    if callable(value):
+        objective_spec = getattr(value, "__hawkshot_objective_spec__", None)
+
+        if not isinstance(objective_spec, dict):
+            raise ValueError(
+                "Experiment parameters must be JSON-serializable. "
+                "Callable has nop explicit provenance metadata."
+            )
+
+        return {"custom_objective": objective_spec.copy()}
+
+    return value
+
+
+def materialize_cv_splits(cv, X, y, groups):
+    """Generate reusable cross-validation splits.
+
+    Parameters
+    ----------
+    cv : cross-validation splitter
+        Splitter implementing the split method.
+    X : pandas.DataFrame
+        Inpute features.
+    y : pandas.Series
+        Target values.
+    groups : pandas.Series
+        Engine identifiers.
+
+    Returns
+    -------
+    list of tuple
+        Train and validation index arrays for each fold.
+    """
+
+    splits = [
+        (
+            np.asarray(train_idx, dtype=int).copy(),
+            np.asarray(validation_idx, dtype=int).copy(),
+        )
+        for train_idx, validation_idx in cv.split(X, y, groups=groups)
+    ]
+
+    if not splits:
+        raise ValueError("Cross-validation produced no splits")
+
+    return splits

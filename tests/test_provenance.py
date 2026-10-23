@@ -2,13 +2,14 @@ import pandas as pd
 import pytest
 
 from sklearn.linear_model import Ridge
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import GroupKFold, GridSearchCV
 from sklearn.base import BaseEstimator
 
 from hawkshot.experiments.provenance import (
     fingerprint_cv_splits,
     fingerprint_pandas,
     build_experiment_manifest,
+    materialize_cv_splits,
 )
 
 from hawkshot.experiments.checkpoints import experiment_fingerprint
@@ -205,3 +206,174 @@ def test_custom_objective_weight_changes_fingerprint(
     hash_b = fingerprint_experiment(**{**experiment_input, "model": model_b})
 
     assert hash_a != hash_b
+
+
+def test_custom_objective_in_grid_changes_fingerprint(experiment_input):
+    objective_a = make_asymmetric_mse(3.5)
+    objective_b = make_asymmetric_mse(5.0)
+
+    model = ObjectiveEstimator("reg:squarederror")
+
+    input_a = {
+        **experiment_input,
+        "model": model,
+        "param_grid": {"objective": [objective_a]},
+    }
+
+    input_b = {
+        **experiment_input,
+        "model": model,
+        "param_grid": {"objective": [objective_b]},
+    }
+
+    manifest_a = build_experiment_manifest(**input_a)
+    manifest_b = build_experiment_manifest(**input_b)
+
+    assert input_a["param_grid"]["objective"][0] is objective_a
+
+    assert manifest_a["param_grid"]["objective"][0] == {
+        "custom_objective": objective_a.__hawkshot_objective_spec__
+    }
+
+    assert experiment_fingerprint(manifest_a) != experiment_fingerprint(manifest_b)
+
+
+def test_multiple_grid_parameters_change_fingerprint(experiment_input):
+    grid_a = {
+        "alpha": [0.1, 1.0],
+        "solver": ["auto", "svd"],
+    }
+
+    grid_b = {
+        "alpha": [0.5, 1.2],
+        "solver": ["auto", "cholesky"],
+    }
+
+    hash_a = fingerprint_experiment(**{**experiment_input, "param_grid": grid_a})
+
+    hash_b = fingerprint_experiment(**{**experiment_input, "param_grid": grid_b})
+
+    assert hash_a != hash_b
+
+
+def test_list_of_parameter_grids_changes_fingerprint(experiment_input):
+    grids_a = [
+        {
+            "alpha": [0.1, 1.0],
+        },
+        {
+            "alpha": [2.0],
+            "solver": ["svd", "cholesky"],
+        },
+    ]
+
+    grids_b = [
+        {
+            "alpha": [0.1, 1.0],
+        },
+        {
+            "alpha": [2.0],
+            "solver": ["svd", "lsqr"],
+        },
+    ]
+
+    hash_a = fingerprint_experiment(**{**experiment_input, "param_grid": grids_a})
+
+    hash_b = fingerprint_experiment(**{**experiment_input, "param_grid": grids_b})
+
+    assert hash_a != hash_b
+
+
+def test_materialized_splits_match_original_cv(experiment_input):
+    X = experiment_input["X"]
+    y = experiment_input["y"]
+    groups = experiment_input["groups"]
+
+    cv = GroupKFold(n_splits=2)
+
+    splits = materialize_cv_splits(cv, X, y, groups)
+
+    original_hash = fingerprint_cv_splits(cv, X, y, groups)
+    materialized_hash = fingerprint_cv_splits(splits, X, y, groups)
+
+    assert original_hash == materialized_hash
+    assert len(splits) == 2
+
+
+def test_materialized_splits_are_reused(experiment_input):
+    class CountingCV:
+        def __init__(self):
+            self.calls = 0
+
+        def split(self, X, y, groups):
+            self.calls += 1
+            yield from GroupKFold(n_splits=2).split(X, y, groups=groups)
+
+    X = experiment_input["X"]
+    y = experiment_input["y"]
+    groups = experiment_input["groups"]
+
+    cv = CountingCV()
+    splits = materialize_cv_splits(cv, X, y, groups)
+
+    manifest = build_experiment_manifest(**{**experiment_input, "cv": splits})
+
+    search = GridSearchCV(
+        estimator=Ridge(),
+        param_grid={"alpha": [0.1, 1.0]},
+        scoring="neg_mean_absolute_error",
+        cv=splits,
+    )
+
+    search.fit(X, y)
+
+    assert isinstance(manifest["folds_fingerprint"], str)
+    assert len(search.cv_results_["params"]) == 2
+
+    assert cv.calls == 1
+
+
+def test_xgboost_manifest_without_training(experiment_input):
+    from xgboost import XGBRegressor
+
+    model = XGBRegressor(
+        random_state=42,
+        n_jobs=1,
+        tree_method="hist",
+    )
+
+    manifest = build_experiment_manifest(
+        **{
+            **experiment_input,
+            "model": model,
+            "param_grid": {
+                "max_depth": [5, 7],
+            },
+        }
+    )
+
+    fingerprint = experiment_fingerprint(manifest)
+
+    assert isinstance(fingerprint, str)
+    assert len(fingerprint) == 64
+
+
+def test_xgboost_nan_and_none_have_different_fingerprints(
+    experiment_input,
+):
+    from xgboost import XGBRegressor
+
+    model_nan = XGBRegressor(missing=float("nan"))
+    model_none = XGBRegressor(missing=None)
+
+    manifest_nan = build_experiment_manifest(**{**experiment_input, "model": model_nan})
+
+    manifest_none = build_experiment_manifest(
+        **{**experiment_input, "model": model_none}
+    )
+
+    assert manifest_nan["fixed_params"]["missing"] == {
+        "__hawkshot_nonfinite_float__": "nan"
+    }
+
+    assert experiment_fingerprint(manifest_nan) != experiment_fingerprint(manifest_none)
