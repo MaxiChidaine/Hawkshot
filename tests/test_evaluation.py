@@ -5,7 +5,7 @@ from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.dummy import DummyRegressor
 from sklearn.model_selection import GroupKFold
 
-from hawkshot.modeling.evaluation import evaluate_grouped_cv
+from hawkshot.modeling.evaluation import evaluate_grouped_cv, summarize_oof_predictions
 
 
 @pytest.fixture
@@ -137,3 +137,26 @@ def test_evaluation_clones_models_and_separates_engines():
     assert len({id(fold_model) for fold_model in fitted}) == 3
 
     assert not hasattr(model, "training_engines_")
+
+
+def test_summaryze_oof_predictions():
+    oof_df = pd.DataFrame(
+        {
+            "engine_id": [1, 1, 2],
+            "y_true": [10.0, 20.0, 30.0],
+            "y_pred": [12.0, 18.0, 31.0],
+        }
+    )
+
+    scores = summarize_oof_predictions(
+        oof_df,
+        model_id="test_model",
+    )
+
+    assert scores["Model"] == "test_model"
+    assert scores["MAE"] == pytest.approx(5 / 3)
+    assert scores["RMSE"] == pytest.approx(3**0.5)
+    assert scores["overestimation_rate"] == pytest.approx(2 / 3)
+    assert scores["mean_signed_error"] == pytest.approx(1 / 3)
+    assert scores["n_engines"] == 2
+    assert scores["n_observations"] == 3

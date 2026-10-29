@@ -1,9 +1,11 @@
 import pandas as pd
 import pytest
+import numpy as np
 
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import GroupKFold, GridSearchCV
 from sklearn.base import BaseEstimator
+
 
 from hawkshot.experiments.provenance import (
     fingerprint_cv_splits,
@@ -377,3 +379,14 @@ def test_xgboost_nan_and_none_have_different_fingerprints(
     }
 
     assert experiment_fingerprint(manifest_nan) != experiment_fingerprint(manifest_none)
+
+
+def test_numpy_scalar_in_manifest(experiment_input):
+    manifest = build_experiment_manifest(
+        **{
+            **experiment_input,
+            "param_grid": {"alpha": [np.int64(2)]},
+        }
+    )
+
+    assert manifest["param_grid"]["alpha"] == [2]

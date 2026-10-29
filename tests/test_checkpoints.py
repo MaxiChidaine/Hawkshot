@@ -269,3 +269,72 @@ def test_interrupted_publication_keeps_checkpoint_invalid(
         )
 
     assert not any(file.name.endswith(".tmp") for file in tmp_path.iterdir())
+
+
+def test_checkpoint_rejects_different_result_schema(tmp_path):
+    results = pd.DataFrame(
+        {
+            "y_true": [100, 90],
+            "y_pred": [95, 85],
+        }
+    )
+
+    checkpoint_path = tmp_path / "predictions.csv"
+    experiment = {"model": "dummy"}
+
+    checkpoints.write_dataframe_checkpoint(
+        checkpoint_path,
+        experiment=experiment,
+        results=results,
+        expected_rows=2,
+        required_columns=("y_true",),
+    )
+
+    with pytest.raises(checkpoints.CheckpointConflictError):
+        checkpoints.inspect_dataframe_checkpoint(
+            checkpoint_path,
+            experiment=experiment,
+            expected_rows=2,
+            required_columns=("y_pred",),
+        )
+
+
+def test_dataframe_checkpoint_oof_roundtrip(tmp_path):
+    predictions = pd.DataFrame(
+        {
+            "row_position": [0, 1, 2],
+            "engine_id": [1, 1, 2],
+            "cycle": [1, 2, 1],
+            "fold": [1, 1, 2],
+            "y_true": [100.0, 99.0, 80.0],
+            "y_pred": [95.0, 97.0, 85.0],
+        }
+    )
+
+    experiment = {
+        "experiment_type": "oof",
+        "model": "dummy",
+    }
+
+    checkpoint_path = tmp_path / "oof.csv"
+
+    required_columns = tuple(predictions.columns)
+
+    checkpoints.write_dataframe_checkpoint(
+        checkpoint_path,
+        experiment=experiment,
+        results=predictions,
+        expected_rows=len(predictions),
+        required_columns=required_columns,
+        non_null_columns=required_columns,
+    )
+
+    restored = checkpoints.inspect_dataframe_checkpoint(
+        checkpoint_path,
+        experiment=experiment,
+        expected_rows=len(predictions),
+        required_columns=required_columns,
+        non_null_columns=required_columns,
+    )
+
+    pd.testing.assert_frame_equal(predictions, restored)

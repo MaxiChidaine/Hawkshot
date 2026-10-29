@@ -4,7 +4,7 @@ import sklearn
 import math
 
 from importlib.metadata import version
-
+from sklearn.pipeline import Pipeline
 import pandas as pd
 import numpy as np
 
@@ -216,7 +216,7 @@ def _serialize_grid_value(value):
         return [_serialize_grid_value(item) for item in value]
 
     if isinstance(value, np.generic):
-        return _serialize_grid_value(value.items())
+        return _serialize_grid_value(value.item())
 
     if isinstance(value, float) and not math.isfinite(value):
         if math.isnan(value):
@@ -274,3 +274,104 @@ def materialize_cv_splits(cv, X, y, groups):
         raise ValueError("Cross-validation produced no splits")
 
     return splits
+
+
+def _describe_estimator(model):
+    """return a JSON-compatible description of an estimator."""
+
+    model_class = type(model)
+    model_name = f"{model_class.__module__}.{model_class.__qualname__}"
+
+    if isinstance(model, Pipeline):
+        return {
+            "class": model_name,
+            "params": _serialize_grid_value(
+                {
+                    key: value
+                    for key, value in model.get_params(deep=False).items()
+                    if key != "steps"
+                }
+            ),
+            "steps": [
+                {
+                    "name": name,
+                    "estimator": _describe_estimator(estimator),
+                }
+                for name, estimator in model.steps
+            ],
+        }
+
+    return {
+        "class": model_name,
+        "params": _serialize_grid_value(model.get_params(deep=False)),
+    }
+
+
+def build_oof_manifest(
+    *,
+    model,
+    X,
+    y,
+    groups,
+    cycles,
+    folds,
+    protocol_version="oof_v1",
+):
+    """Build a reproductible manifest for OOF predictions."""
+
+    if not (len(X) == len(y) == len(groups) == len(cycles)):
+        raise ValueError("X, y, groups and cycles must have the same length.")
+
+    versions = {
+        "numpy": np.__version__,
+        "pandas": pd.__version__,
+        **_get_estimator_version(model),
+    }
+
+    experiment = {
+        "manifest_schema_version": 1,
+        "experiment_type": "oof",
+        "protocol_version": protocol_version,
+        "estimator": _describe_estimator(model),
+        "X_fingerprint": fingerprint_pandas(X),
+        "y_fingerprint": fingerprint_pandas(y),
+        "groups_fingerprint": fingerprint_pandas(groups),
+        "cycles_fingerprint": fingerprint_pandas(cycles),
+        "folds_fingerprint": fingerprint_cv_splits(folds, X, y, groups),
+        "versions": versions,
+    }
+
+    experiment_fingerprint(experiment)
+
+    return experiment
+
+
+def _get_estimator_version(model):
+    """Identify the library versions used by an estimator."""
+
+    distributions = {
+        "sklearn": "scikit-learn",
+        "xgboost": "xgboost",
+    }
+
+    if isinstance(model, Pipeline):
+        estimators = [
+            estimator
+            for _, estimator in model.steps
+            if estimator is not None and estimator != "passthrough"
+        ]
+
+    else:
+        estimators = [model]
+
+    packages = {"sklearn"}
+
+    packages.update(
+        type(estimator).__module__.split(".")[0] for estimator in estimators
+    )
+
+    return {
+        package: version(distribution)
+        for package, distribution in distributions.items()
+        if package in packages
+    }

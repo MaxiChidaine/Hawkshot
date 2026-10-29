@@ -106,12 +106,12 @@ def _():
         time,
         train_test_split,
         winsound,
-        materialize_cv_splits,
+        clone,
         run_or_reuse_grid_search,
         perf_counter,
+        materialize_cv_splits,
         mean_absolute_error,
         root_mean_squared_error,
-        clone,
     )
 
 
@@ -4589,6 +4589,7 @@ def _(et_finalists, gb_finalists, pd, rf_finalists, xgb_finalists):
         "overestimation_rate",
         "mean_signed_error",
         "mean_overestimation",
+        "params",
     ]
 
     tabular_finalists_df[tabular_finalists_columns].sort_values("MAE").round(3)

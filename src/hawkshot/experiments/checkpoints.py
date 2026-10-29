@@ -35,13 +35,41 @@ def experiment_fingerprint(experiment: dict) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def inspect_checkpoint(
+def _validate_dataframe_results(
+    results: pd.DataFrame,
+    *,
+    expected_rows: int | None = None,
+    required_columns: tuple[str, ...] = (),
+    non_null_columns: tuple[str, ...] = (),
+) -> None:
+    """Validate a Dataframe against configurable constraints."""
+
+    if expected_rows is not None:
+        if expected_rows < 1 or len(results) != expected_rows:
+            raise ValueError("Unexpected number of checkpoint rows.")
+
+    required = set(required_columns) | set(non_null_columns)
+    missing_columns = required - set(results.columns)
+
+    if missing_columns:
+        raise ValueError(f"Checkpoint is missing required columns: {missing_columns}")
+
+    if non_null_columns:
+        if results[list(non_null_columns)].isna().any().any():
+            raise ValueError("Checkpoint contains missing required values")
+
+
+def inspect_dataframe_checkpoint(
     checkpoint_path: Path,
     *,
     experiment: dict,
     expected_rows: int,
+    required_columns: tuple[str, ...] = (),
+    non_null_columns: tuple[str, ...] = (),
+    allow_legacy_schema: bool = False,
 ) -> pd.DataFrame | None:
     """Read a checkpoint only if its metadata and contents are valid."""
+
     checkpoint_path = Path(checkpoint_path)
     metadata_path = checkpoint_path.with_suffix(".meta.json")
 
@@ -67,7 +95,7 @@ def inspect_checkpoint(
 
     if (
         not isinstance(metadata, dict)
-        or metadata.get("schema_version") != 1
+        or metadata.get("schema_version") not in (1, 2)
         or not isinstance(metadata.get("experiment"), dict)
         or metadata.get("experiment_fingerprint") != expected_fingerprint
         or experiment_fingerprint(metadata["experiment"]) != expected_fingerprint
@@ -75,6 +103,22 @@ def inspect_checkpoint(
         raise CheckpointConflictError(
             f"Checkpoint metadata in {metadata_path} does not match the expected experiment configuration."
         )
+
+    expected_schema = _build_result_schema(
+        expected_rows=expected_rows,
+        required_columns=required_columns,
+        non_null_columns=non_null_columns,
+    )
+
+    if metadata["schema_version"] == 2:
+        if metadata.get("result_schema") != expected_schema:
+            raise CheckpointConflictError(
+                "Checkpoint result schema does not match expected constraints."
+            )
+
+    elif not allow_legacy_schema:
+        raise CheckpointConflictError("Legacy checkpoint has no result schema.")
+
     csv_bytes = checkpoint_path.read_bytes()
     actual_csv_hash = hashlib.sha256(csv_bytes).hexdigest()
 
@@ -85,22 +129,23 @@ def inspect_checkpoint(
 
     try:
         results = pd.read_csv(BytesIO(csv_bytes))
+
     except (pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
         raise CheckpointConflictError(
             f"Failed to read checkpoint CSV from {checkpoint_path}: {exc}"
         ) from exc
 
-    if len(results) != expected_rows:
-        raise CheckpointConflictError(
-            f"Checkpoint CSV in {checkpoint_path} has {len(results)} rows, expected {expected_rows}."
+    try:
+        _validate_dataframe_results(
+            results,
+            expected_rows=expected_rows,
+            required_columns=required_columns,
+            non_null_columns=non_null_columns,
         )
-
-    required_columns = {"params", "mean_test_MAE"}
-
-    if not required_columns.issubset(results.columns):
+    except ValueError as exc:
         raise CheckpointConflictError(
-            f"Checkpoint CSV in {checkpoint_path} is missing required columns: {required_columns - set(results.columns)}."
-        )
+            f"Invalid checkpoint in {checkpoint_path}: {exc}"
+        ) from exc
 
     return results
 
@@ -131,12 +176,14 @@ def _publish_new(staged_path: Path, destination: Path) -> None:
         ) from exc
 
 
-def write_checkpoint(
+def write_dataframe_checkpoint(
     checkpoint_path: Path,
     *,
     experiment: dict,
     results: pd.DataFrame,
     expected_rows: int,
+    required_columns: tuple[str, ...] = (),
+    non_null_columns: tuple[str, ...] = (),
 ) -> Path:
     """Write checkpoint results and metadata without overwritting files.
 
@@ -167,23 +214,24 @@ def write_checkpoint(
     checkpoint_path = Path(checkpoint_path)
     metadata_path = checkpoint_path.with_suffix(".meta.json")
 
-    if expected_rows < 1 or len(results) != expected_rows:
-        raise ValueError("Unexpected number of checkpoint rows.")
-
-    required_columns = {"params", "mean_test_MAE"}
-
-    if not required_columns.issubset(results.columns):
-        raise ValueError("Required result columns are missing")
-
-    if results["mean_test_MAE"].isna().any():
-        raise ValueError("Checkpoint contains missing MAE scores")
+    _validate_dataframe_results(
+        results,
+        expected_rows=expected_rows,
+        required_columns=required_columns,
+        non_null_columns=non_null_columns,
+    )
 
     csv_bytes = results.to_csv(index=False).encode("utf-8")
 
     metadata = {
-        "schema_version": 1,
+        "schema_version": 2,
         "experiment": experiment,
         "experiment_fingerprint": experiment_fingerprint(experiment),
+        "result_schema": _build_result_schema(
+            expected_rows=expected_rows,
+            required_columns=required_columns,
+            non_null_columns=non_null_columns,
+        ),
         "csv_sha256": hashlib.sha256(csv_bytes).hexdigest(),
     }
 
@@ -228,3 +276,55 @@ def write_checkpoint(
             staged_metadata.unlink(missing_ok=True)
 
     return checkpoint_path
+
+
+def write_checkpoint(
+    checkpoint_path: Path,
+    *,
+    experiment: dict,
+    results: pd.DataFrame,
+    expected_rows: int,
+) -> Path:
+    """Save GridSearchCV results using generic checkpoint writer."""
+
+    return write_dataframe_checkpoint(
+        checkpoint_path,
+        experiment=experiment,
+        results=results,
+        expected_rows=expected_rows,
+        required_columns=("params", "mean_test_MAE"),
+        non_null_columns=("mean_test_MAE",),
+    )
+
+
+def inspect_checkpoint(
+    checkpoint_path: Path,
+    *,
+    experiment: dict,
+    expected_rows: int,
+) -> pd.DataFrame | None:
+    """Inspect GridSearchCV results using the generic checkpoint reader."""
+
+    return inspect_dataframe_checkpoint(
+        checkpoint_path,
+        experiment=experiment,
+        expected_rows=expected_rows,
+        required_columns=("params", "mean_test_MAE"),
+        non_null_columns=("mean_test_MAE",),
+        allow_legacy_schema=True,
+    )
+
+
+def _build_result_schema(
+    *,
+    expected_rows: int,
+    required_columns: tuple[str, ...],
+    non_null_columns: tuple[str, ...],
+) -> dict:
+    """Build a cannonical description of checkpoint constraints."""
+
+    return {
+        "expected_rows": expected_rows,
+        "required_columns": sorted(set(required_columns)),
+        "non_null_columns": sorted(set(non_null_columns)),
+    }

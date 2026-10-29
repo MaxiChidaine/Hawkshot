@@ -5,13 +5,27 @@ from sklearn.model_selection import GridSearchCV, ParameterGrid
 from hawkshot.experiments.checkpoints import (
     inspect_checkpoint,
     write_checkpoint,
+    inspect_dataframe_checkpoint,
+    write_dataframe_checkpoint,
 )
 
 from hawkshot.experiments.provenance import (
     build_experiment_manifest,
+    build_oof_manifest,
 )
 
 from hawkshot.modeling.search_results import format_grid_search_results
+
+from hawkshot.modeling.oof import generate_oof_predictions
+
+OOF_COLUMNS = (
+    "row_position",
+    "engine_id",
+    "cycle",
+    "fold",
+    "y_true",
+    "y_pred",
+)
 
 
 def run_or_reuse_grid_search(
@@ -105,3 +119,60 @@ def run_or_reuse_grid_search(
     )
 
     return results
+
+
+def run_or_reuse_oof(
+    *,
+    model,
+    X,
+    y,
+    groups,
+    cycles,
+    cv_splits,
+    checkpoint_path,
+    protocol_version="oof_v1",
+):
+    """Generate OOF predictions or reuse a matching checkpoint."""
+
+    checkpoint_path = Path(checkpoint_path)
+
+    manifest = build_oof_manifest(
+        model=model,
+        X=X,
+        y=y,
+        groups=groups,
+        cycles=cycles,
+        folds=cv_splits,
+        protocol_version=protocol_version,
+    )
+
+    existing = inspect_dataframe_checkpoint(
+        checkpoint_path,
+        experiment=manifest,
+        expected_rows=len(X),
+        required_columns=OOF_COLUMNS,
+        non_null_columns=OOF_COLUMNS,
+    )
+
+    if existing is not None:
+        return existing
+
+    predictions = generate_oof_predictions(
+        model=model,
+        X=X,
+        y=y,
+        groups=groups,
+        cycles=cycles,
+        folds=cv_splits,
+    )
+
+    write_dataframe_checkpoint(
+        checkpoint_path,
+        experiment=manifest,
+        results=predictions,
+        expected_rows=len(X),
+        required_columns=OOF_COLUMNS,
+        non_null_columns=OOF_COLUMNS,
+    )
+
+    return predictions

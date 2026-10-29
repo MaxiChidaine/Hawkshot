@@ -58,3 +58,19 @@ def evaluate_grouped_cv(model, X, y, groups, cv):
         "mean_signed_error": np.mean(mean_signed_errors),
         "mean_overestimation": np.mean(mean_overestimations),
     }
+
+
+def summarize_oof_predictions(oof_df, model_id):
+    y_true = oof_df["y_true"]
+    y_pred = oof_df["y_pred"]
+
+    return {
+        "Model": model_id,
+        "MAE": mean_absolute_error(y_true, y_pred),
+        "RMSE": root_mean_squared_error(y_true, y_pred),
+        "overestimation_rate": overestimation_rate(y_true, y_pred),
+        "mean_overestimation": mean_overestimation(y_true, y_pred),
+        "mean_signed_error": (y_pred - y_true).mean(),
+        "n_engines": oof_df["engine_id"].nunique(),
+        "n_observations": len(oof_df),
+    }
