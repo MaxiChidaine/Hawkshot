@@ -5,7 +5,12 @@ from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.dummy import DummyRegressor
 from sklearn.model_selection import GroupKFold
 
-from hawkshot.modeling.evaluation import evaluate_grouped_cv, summarize_oof_predictions
+from hawkshot.modeling.evaluation import (
+    evaluate_grouped_cv,
+    summarize_oof_predictions,
+    analyze_oof_errors_by_rul,
+    analyze_oof_errors_by_engine,
+)
 
 
 @pytest.fixture
@@ -160,3 +165,101 @@ def test_summaryze_oof_predictions():
     assert scores["mean_signed_error"] == pytest.approx(1 / 3)
     assert scores["n_engines"] == 2
     assert scores["n_observations"] == 3
+
+
+def test_analyze_oof_errors_by_rul():
+    oof_df = pd.DataFrame(
+        {
+            "engine_id": [1, 1, 2, 2],
+            "y_true": [9, 10, 124, 125],
+            "y_pred": [11, 12, 122, 120],
+        }
+    )
+
+    results = analyze_oof_errors_by_rul(
+        oof_df,
+        model_id="test_model",
+    )
+
+    assert results["rul_band"].tolist() == [
+        "0-9",
+        "10-19",
+        "120-124",
+        "125_capped",
+    ]
+
+    first_band = results.set_index("rul_band").loc["0-9"]
+
+    assert first_band["MAE"] == pytest.approx(2.0)
+    assert first_band["p90_abs_error"] == pytest.approx(2.0)
+
+
+def test_analyze_oof_large_overestimations():
+    oof_df = pd.DataFrame(
+        {
+            "engine_id": [1, 1, 1, 1, 1],
+            "y_true": [20, 21, 22, 23, 24],
+            "y_pred": [20, 31, 34, 44, 50],
+        }
+    )
+
+    results = analyze_oof_errors_by_rul(
+        oof_df,
+        model_id="test_model",
+    )
+
+    band = results.iloc[0]
+
+    assert band["rul_band"] == "20-29"
+    assert band["overestimation_gt_10_rate"] == pytest.approx(0.6)
+    assert band["overestimation_gt_20_rate"] == pytest.approx(0.4)
+    assert band["p90_signed_error"] == pytest.approx(24.0)
+
+
+def test_analyze_oof_errors_by_engine():
+    oof_df = pd.DataFrame(
+        {
+            "engine_id": [1, 1, 1, 1, 2, 2],
+            "cycle": [1, 2, 4, 5, 1, 2],
+            "y_true": [50, 49, 47, 46, 30, 29],
+            "y_pred": [75, 79, 71, 41, 40, 24],
+        }
+    )
+
+    results = analyze_oof_errors_by_engine(
+        oof_df,
+        model_id="test_model",
+    ).set_index("engine_id")
+
+    engine_1 = results.loc[1]
+    engine_2 = results.loc[2]
+
+    assert engine_1["MAE"] == pytest.approx(21.0)
+    assert engine_1["max_overestimation"] == pytest.approx(30.0)
+    assert engine_1["n_overestimations_gt_20"] == 3
+    assert engine_1["longest_overestimation_gt_20_streak"] == 2
+
+    assert engine_2["n_overestimations_gt_20"] == 0
+    assert engine_2["longest_overestimation_gt_20_streak"] == 0
+
+
+def test_analyze_oof_underestimations():
+    oof_df = pd.DataFrame(
+        {
+            "engine_id": [1, 1, 1, 1, 1],
+            "y_true": [20, 21, 22, 23, 24],
+            "y_pred": [20, 31, 10, 2, 26],
+        }
+    )
+
+    results = analyze_oof_errors_by_rul(
+        oof_df,
+        model_id="test_model",
+    )
+
+    band = results.iloc[0]
+
+    assert band["rul_band"] == "20-29"
+    assert band["underestimation_rate"] == pytest.approx(0.4)
+    assert band["mean_underestimation"] == pytest.approx(16.5)
+    assert band["underestimation_gt_20_rate"] == pytest.approx(0.2)
