@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "dataset": "NASA C-MAPSS FD001",
+  "id": "xgboost_pseudohuber",
+  "model": "XGBoost",
+  "profile": "pseudohuber",
+  "params": {
+    "objective": "reg:pseudohubererror",
+    "huber_slope": 0.4,
+    "learning_rate": 0.02,
+    "n_estimators": 1200,
+    "max_depth": 7,
+    "min_child_weight": 8,
+    "subsample": 0.7,
+    "colsample_bytree": 1.0,
+    "gamma": 0.1,
+    "reg_alpha": 0.0,
+    "reg_lambda": 1.0,
+    "tree_method": "hist",
+    "random_state": 42,
+    "n_jobs": 1
+  },
+  "feature_set": "no_means",
+  "temporal_config": {
+    "mean": [
+      5,
+      10,
+      20
+    ],
+    "delta": [
+      5,
+      10
+    ],
+    "slope": [
+      10,
+      20
+    ]
+  },
+  "rul_cap": 125
+}

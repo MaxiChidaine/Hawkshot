@@ -1,0 +1,225 @@
+{
+  "schema_version": 1,
+  "finalists": [
+    {
+      "id": "gradientboosting_absolute_error",
+      "model": "GradientBoosting",
+      "profile": "absolute_error",
+      "feature_set": "no_means",
+      "params": {
+        "loss": "absolute_error",
+        "learning_rate": 0.015,
+        "n_estimators": 800,
+        "max_depth": 10,
+        "min_samples_leaf": 30,
+        "subsample": 0.6,
+        "max_features": 1.0,
+        "random_state": 42
+      }
+    },
+    {
+      "id": "gradientboosting_huber_0_80",
+      "model": "GradientBoosting",
+      "profile": "huber_0.80",
+      "feature_set": "no_means",
+      "params": {
+        "loss": "huber",
+        "alpha": 0.8,
+        "learning_rate": 0.0075,
+        "n_estimators": 1600,
+        "max_depth": 10,
+        "min_samples_leaf": 25,
+        "subsample": 0.6,
+        "max_features": 1.0,
+        "random_state": 42
+      }
+    },
+    {
+      "id": "gradientboosting_squared_error",
+      "model": "GradientBoosting",
+      "profile": "squared_error",
+      "feature_set": "no_means",
+      "params": {
+        "loss": "squared_error",
+        "learning_rate": 0.01,
+        "n_estimators": 1200,
+        "max_depth": 10,
+        "min_samples_leaf": 20,
+        "subsample": 0.6,
+        "max_features": 0.75,
+        "random_state": 42
+      }
+    },
+    {
+      "id": "gradientboosting_quantile_0_40",
+      "model": "GradientBoosting",
+      "profile": "quantile_0.40",
+      "feature_set": "no_means",
+      "params": {
+        "loss": "quantile",
+        "alpha": 0.4,
+        "learning_rate": 0.0075,
+        "n_estimators": 1600,
+        "max_depth": 10,
+        "min_samples_leaf": 30,
+        "subsample": 0.6,
+        "max_features": 0.75,
+        "random_state": 42
+      }
+    },
+    {
+      "id": "gradientboosting_quantile_0_30",
+      "model": "GradientBoosting",
+      "profile": "quantile_0.30",
+      "feature_set": "no_means",
+      "params": {
+        "loss": "quantile",
+        "alpha": 0.3,
+        "learning_rate": 0.02,
+        "n_estimators": 600,
+        "max_depth": 11,
+        "min_samples_leaf": 20,
+        "subsample": 1.0,
+        "max_features": 0.75,
+        "random_state": 42
+      }
+    },
+    {
+      "id": "extratrees_absolute_error",
+      "model": "ExtraTrees",
+      "profile": "absolute_error",
+      "feature_set": "no_means_no_deltas",
+      "params": {
+        "n_estimators": 500,
+        "criterion": "absolute_error",
+        "max_depth": 16,
+        "min_samples_leaf": 6,
+        "min_samples_split": 2,
+        "max_features": 1.0,
+        "bootstrap": false,
+        "random_state": 42
+      }
+    },
+    {
+      "id": "extratrees_poisson",
+      "model": "ExtraTrees",
+      "profile": "poisson",
+      "feature_set": "no_means_no_deltas",
+      "params": {
+        "n_estimators": 1000,
+        "criterion": "poisson",
+        "max_depth": 26,
+        "min_samples_leaf": 2,
+        "min_samples_split": 2,
+        "max_features": 1.0,
+        "bootstrap": false,
+        "random_state": 42
+      }
+    },
+    {
+      "id": "randomforest_absolute_error",
+      "model": "RandomForest",
+      "profile": "absolute_error",
+      "feature_set": "no_means_no_deltas",
+      "params": {
+        "n_estimators": 300,
+        "criterion": "absolute_error",
+        "max_depth": 14,
+        "min_samples_leaf": 4,
+        "min_samples_split": 2,
+        "max_features": 0.7,
+        "bootstrap": true,
+        "max_samples": 1.0,
+        "random_state": 42
+      }
+    },
+    {
+      "id": "randomforest_poisson",
+      "model": "RandomForest",
+      "profile": "poisson",
+      "feature_set": "no_means_no_deltas",
+      "params": {
+        "n_estimators": 500,
+        "criterion": "poisson",
+        "max_depth": 18,
+        "min_samples_leaf": 2,
+        "min_samples_split": 2,
+        "max_features": 0.7,
+        "bootstrap": true,
+        "max_samples": 1.0,
+        "random_state": 42
+      }
+    },
+    {
+      "id": "xgboost_pseudohuber",
+      "model": "XGBoost",
+      "profile": "pseudohuber",
+      "feature_set": "no_means",
+      "params": {
+        "objective": "reg:pseudohubererror",
+        "huber_slope": 0.4,
+        "learning_rate": 0.02,
+        "n_estimators": 1200,
+        "max_depth": 7,
+        "min_child_weight": 8,
+        "subsample": 0.7,
+        "colsample_bytree": 1.0,
+        "gamma": 0.1,
+        "reg_alpha": 0.0,
+        "reg_lambda": 1.0,
+        "tree_method": "hist",
+        "random_state": 42,
+        "n_jobs": 1
+      }
+    },
+    {
+      "id": "xgboost_quantile",
+      "model": "XGBoost",
+      "profile": "quantile",
+      "feature_set": "no_means_no_deltas",
+      "params": {
+        "objective": "reg:quantileerror",
+        "quantile_alpha": 0.475,
+        "learning_rate": 0.02,
+        "n_estimators": 1200,
+        "max_depth": 7,
+        "min_child_weight": 12,
+        "subsample": 0.7,
+        "colsample_bytree": 1.0,
+        "gamma": 2.0,
+        "reg_alpha": 0.1,
+        "reg_lambda": 20.0,
+        "tree_method": "hist",
+        "random_state": 42,
+        "n_jobs": 1
+      }
+    },
+    {
+      "id": "xgboost_asymmetric",
+      "model": "XGBoost",
+      "profile": "asymmetric",
+      "feature_set": "no_means",
+      "params": {
+        "objective": {
+          "custom_objective": {
+            "name": "hawkshot.asymmetric_mse",
+            "version": 1,
+            "overestimation_weight": 3.5
+          }
+        },
+        "learning_rate": 0.015,
+        "n_estimators": 1600,
+        "max_depth": 9,
+        "min_child_weight": 4,
+        "subsample": 0.7,
+        "colsample_bytree": 1.0,
+        "gamma": 0.0,
+        "reg_alpha": 0.1,
+        "reg_lambda": 20.0,
+        "tree_method": "hist",
+        "random_state": 42,
+        "n_jobs": 1
+      }
+    }
+  ]
+}

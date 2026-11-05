@@ -133,7 +133,7 @@ def _(add_temporal_features, available_sensors, df_train):
         *available_sensors,
         *temporal_features,
     ]
-    return df_train_temporal, raw_temporal_cycle_features
+    return df_train_temporal, raw_temporal_cycle_features, temporal_config
 
 
 @app.cell
@@ -389,7 +389,7 @@ def _(
     assert comparison_df["Model"].is_unique
 
     comparison_df.sort_values("MAE").reset_index(drop=True).round(3)
-    return
+    return (comparison_df,)
 
 
 @app.cell
@@ -833,6 +833,146 @@ def _(rul_comparison_df):
     ]
 
     asymmetry_comparison_df.round(2)
+    return
+
+
+@app.cell
+def _(rul_comparison_df):
+    _high_rul_bands = [
+        "80-89",
+        "90-99",
+        "100-109",
+        "110-119",
+        "120-124",
+        "125_capped",
+    ]
+
+    _models = [
+        "xgboost_pseudohuber",
+        "gradientboosting_quantile_0_30",
+    ]
+
+    asymmetry_high_rul_df = rul_comparison_df.loc[
+        rul_comparison_df["Model"].isin(_models)
+        & rul_comparison_df["rul_band"].isin(_high_rul_bands)
+    ].assign(
+        under_gt20_pct=lambda _df: (_df["underestimation_gt_20_rate"] * 100),
+        over_gt20_pct=lambda _df: (_df["overestimation_gt_20_rate"] * 100),
+    )[
+        [
+            "Model",
+            "rul_band",
+            "n_observations",
+            "MAE",
+            "mean_signed_error",
+            "under_gt20_pct",
+            "over_gt20_pct",
+        ]
+    ]
+
+    asymmetry_high_rul_df.round(2)
+    return
+
+
+@app.cell
+def _(comparison_df, finalists, rul_comparison_df):
+    _finalist_ids = {_finalist["id"] for _finalist in finalists}
+
+    _global = comparison_df.loc[
+        comparison_df["Model"].isin(_finalist_ids),
+        [
+            "Model",
+            "MAE",
+            "RMSE",
+            "overestimation_rate",
+            "mean_signed_error",
+        ],
+    ].copy()
+
+    _near = (
+        rul_comparison_df.loc[
+            rul_comparison_df["rul_band"].isin(["0-9", "10-19", "20-29"])
+        ]
+        .groupby("Model")
+        .agg(
+            near_MAE=("MAE", "mean"),
+            near_over_gt20=("overestimation_gt_20_rate", "mean"),
+            near_under_gt20=("underestimation_gt_20_rate", "mean"),
+        )
+    )
+
+    _mid = (
+        rul_comparison_df.loc[rul_comparison_df["rul_band"].isin(["60-69", "70-79"])]
+        .groupby("Model")
+        .agg(
+            mid_MAE=("MAE", "mean"),
+            mid_over_gt20=("overestimation_gt_20_rate", "mean"),
+            mid_under_gt20=("underestimation_gt_20_rate", "mean"),
+        )
+    )
+
+    finalist_decision_df = (
+        _global.merge(_near, on="Model")
+        .merge(_mid, on="Model")
+        .sort_values("MAE")
+        .reset_index(drop=True)
+    )
+
+    assert len(finalist_decision_df) == 12
+    assert finalist_decision_df["Model"].is_unique
+
+    finalist_decision_df.round(3)
+    return
+
+
+@app.cell
+def _(Path, finalists, json, oof_feature_sets, temporal_config):
+    _selected = next(
+        _config for _config in finalists if _config["id"] == "xgboost_pseudohuber"
+    )
+
+    assert _selected["feature_set"] == "no_means"
+
+    _feature_columns = oof_feature_sets[_selected["feature_set"]].columns.tolist()
+
+    assert len(_feature_columns) == 71
+
+    _frozen_config = {
+        "schema_version": 1,
+        "dataset": "NASA C-MAPSS FD001",
+        "id": _selected["id"],
+        "model": _selected["model"],
+        "profile": _selected["profile"],
+        "params": _selected["params"],
+        "feature_set": _selected["feature_set"],
+        "temporal_config": temporal_config,
+        "rul_cap": 125,
+    }
+
+    _config_path = Path("configs/final_model_v1.json")
+    _config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if _config_path.exists():
+        _existing = json.loads(_config_path.read_text(encoding="utf-8"))
+
+        if _existing != _frozen_config:
+            raise ValueError(
+                "Frozen V1 configuration differs. "
+                "Do not overwrite it without an explicit decision."
+            )
+
+        print("V1 configuration already frozen.")
+
+    else:
+        _config_path.write_text(
+            json.dumps(_frozen_config, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        print(f"V1 configuration frozen: {_config_path}")
+
+    print("Selected model:", _selected["id"])
+    print("Features:", len(_feature_columns))
     return
 
 
