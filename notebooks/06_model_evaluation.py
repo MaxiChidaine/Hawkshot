@@ -66,7 +66,75 @@ def _():
 @app.cell
 def _(mo):
     mo.md(r"""
+    # 06 — Model Evaluation and Error Analysis
+
+    ## Objective
+
+    The previous notebook identified twelve promising machine-learning
+    configurations for Remaining Useful Life (RUL) prediction on the
+    NASA C-MAPSS FD001 dataset.
+
+    While aggregate metrics provide a first indication of predictive
+    performance, they do not fully describe how models behave throughout
+    an engine's degradation trajectory.
+
+    This notebook therefore moves beyond global accuracy to investigate
+    the conditions under which prediction errors occur, their magnitude,
+    and their potential implications for predictive maintenance.
+
+    The analysis addresses four main questions:
+
+    1. How do the twelve finalists compare in overall predictive accuracy?
+    2. At which stages of engine degradation do prediction errors increase?
+    3. Are large RUL overestimations isolated or persistent across cycles
+       and engines?
+    4. How do different models balance overestimation and underestimation?
+
+    The study concludes with a justified selection and configuration
+    freeze of the Hawkshot V1 reference model.
+
+    ## Evaluation Protocol
+
+    All experiments use out-of-fold (OOF) predictions generated through
+    five-fold cross-validation grouped by engine.
+
+    The original FD001 training dataset is divided into 80 development
+    engines and 20 held-out internal validation engines. The analyses
+    presented here focus exclusively on the development subset.
+
+    To ensure reproducibility and avoid redundant computation, OOF
+    predictions are stored in validated checkpoints and reused across
+    the different analyses.
+
+    **Methodological limitation:** The finalist configurations were
+    previously tuned using the development data. Consequently, these
+    OOF results support model comparison and diagnostic analysis but
+    should not be interpreted as an independent estimate of final
+    generalization performance.
+
+    The official FD001 test set remains untouched.
+
+    ---
+
     ## 1. Experimental Setup and Model Candidates
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 1. Experimental Setup
+
+    The data preparation, temporal feature engineering, and grouped
+    cross-validation protocol established in previous notebooks are
+    reconstructed here to ensure reproducibility.
+
+    The evaluation uses 80 development engines, five-fold GroupKFold
+    cross-validation, and the previously selected feature configurations.
+
+    No additional feature optimization or hyperparameter tuning is
+    performed at this stage.
     """)
     return
 
@@ -137,6 +205,29 @@ def _(add_temporal_features, available_sensors, df_train):
 
 
 @app.cell
+def _(mo):
+    mo.md(r"""
+    ### Temporal Feature Reconstruction
+
+    The temporal feature configuration selected during model
+    development is reconstructed without further optimization.
+
+    For each retained sensor, the feature engineering pipeline
+    generates rolling means, temporal differences, and slopes
+    using the previously selected window sizes.
+
+    These features provide information about recent sensor
+    behavior and degradation trends, beyond instantaneous
+    measurements.
+
+    The same feature definitions are preserved across the
+    evaluation experiments to ensure consistency with
+    Notebook 05.
+    """)
+    return
+
+
+@app.cell
 def _(GroupKFold, df_train_temporal, np, pd, raw_temporal_cycle_features):
     cv = GroupKFold(n_splits=5)
 
@@ -173,23 +264,24 @@ def _(GroupKFold, df_train_temporal, np, pd, raw_temporal_cycle_features):
 
 
 @app.cell
-def _(raw_temporal_cycle_features):
-    feature_sets = {
-        "full": raw_temporal_cycle_features,
-        "no_means": [c for c in raw_temporal_cycle_features if "_mean_" not in c],
-        "no_means_no_deltas": [
-            c
-            for c in raw_temporal_cycle_features
-            if "_mean_" not in c and "_delta_" not in c
-        ],
-    }
-    return feature_sets
-
-
-@app.cell
 def _(mo):
     mo.md(r"""
-    ## 2. Out-of-fold Predictions
+    ## 2. Out-of-Fold Predictions and Global Performance
+
+    The twelve finalist configurations selected in Notebook 05 are
+    evaluated alongside two reference models: a median DummyRegressor
+    and a linear regression baseline.
+
+    Each model is evaluated using out-of-fold (OOF) predictions,
+    ensuring that every development observation is predicted by
+    a model that was not trained on its engine.
+
+    Predictions are saved in reproducible checkpoints, allowing
+    subsequent analyses to reuse them without additional training.
+
+    Global MAE and RMSE provide the initial performance comparison,
+    while signed-error metrics help identify potential differences
+    in model behavior.
     """)
     return
 
@@ -287,20 +379,6 @@ def _(Path, json):
 
 
 @app.cell
-def _(finalists):
-    import hawkshot.experiments.finalists as finalists_module
-
-    models = {}
-
-    for finalist in finalists:
-        model = finalists_module.build_model_from_config(finalist)
-        models[finalist["id"]] = model
-
-        print(finalist["id"], "→", type(model).__name__)
-    return
-
-
-@app.cell
 def _(X_cv_full):
     full_columns = X_cv_full.columns.tolist()
 
@@ -395,30 +473,53 @@ def _(
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## 3. Temporal Analysis
+    ### Global Performance — Key Findings
+
+    **XGBoost Pseudo-Huber achieves the lowest overall MAE
+    (8.745 cycles)**, followed by Gradient Boosting Absolute Error
+    (9.044 cycles) and XGBoost Quantile (9.100 cycles).
+
+    However, the ranking is not identical across evaluation metrics.
+    Gradient Boosting Squared Error achieves a slightly lower RMSE
+    (13.946 cycles) than XGBoost Pseudo-Huber (14.003 cycles).
+
+    This illustrates that the configuration minimizing average
+    absolute error does not necessarily minimize larger prediction
+    errors.
+
+    Although XGBoost Pseudo-Huber emerges as the strongest candidate
+    in terms of global MAE, aggregate metrics alone are insufficient
+    to characterize reliability throughout engine degradation.
+
+    The following analyses therefore investigate **when errors
+    occur, how severe they become, and whether they are concentrated
+    on specific engines**.
     """)
     return
 
 
 @app.cell
-def _(analyze_oof_errors_by_rul, pd):
-    _linear_oof = pd.read_csv("results/oof/linear_regression.csv")
+def _(mo):
+    mo.md(r"""
+    ## 3. Prediction Errors Across Remaining Useful Life
 
-    linear_errors_by_rul = analyze_oof_errors_by_rul(
-        _linear_oof,
-        model_id="linear_regression",
-    )
+    Global metrics summarize predictive performance but may conceal
+    significant differences across engine degradation stages.
 
-    linear_errors_by_rul[
-        [
-            "rul_band",
-            "n_observations",
-            "MAE",
-            "RMSE",
-            "overestimation_rate",
-            "p90_abs_error",
-        ]
-    ].round(3)
+    To investigate these variations, OOF predictions are grouped
+    into 10-cycle intervals according to their target RUL.
+
+    For each interval, we examine prediction accuracy and the
+    frequency of RUL overestimation across all fourteen models.
+
+    Observations with a capped RUL of 125 are analyzed separately,
+    since their actual remaining lifetime may exceed this value.
+    They are excluded from the temporal MAE visualization.
+
+    This analysis aims to identify whether prediction difficulties
+    are concentrated in particular degradation stages or remain
+    consistent throughout the engine lifetime.
+    """)
     return
 
 
@@ -537,6 +638,61 @@ def _(rul_comparison_df):
 
 
 @app.cell
+def _(mo):
+    mo.md(r"""
+    ### Key Findings — RUL-Dependent Performance
+
+    Prediction accuracy varies substantially across the remaining
+    lifetime of an engine.
+
+    The nonlinear models achieve particularly low MAE values near
+    failure, but their errors generally increase at intermediate
+    RUL values, with several configurations reaching their highest
+    errors around 60–80 remaining cycles.
+
+    Linear regression follows a different pattern, with considerably
+    larger errors near failure and a less pronounced dependence on
+    the same degradation stages.
+
+    These results suggest that the difficulty of RUL estimation is
+    not uniform throughout an engine's lifetime. However, they do
+    not establish whether these variations originate from sensor
+    behavior, feature representation, or model limitations.
+
+    **An important distinction remains:** a larger prediction error
+    does not necessarily imply a more optimistic RUL estimate.
+    The direction and magnitude of these errors must therefore be
+    examined separately.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 4. Large RUL Overestimations
+
+    In predictive maintenance, overestimating an engine's remaining
+    lifetime may delay maintenance decisions, while underestimation
+    may lead to unnecessary early interventions.
+
+    To investigate potentially consequential prediction errors,
+    we measure the proportion of observations where predicted RUL
+    exceeds the target by more than 20 cycles.
+
+    This threshold is used as an exploratory diagnostic criterion,
+    not as a validated operational safety limit.
+
+    Unlike the overall overestimation rate, this metric distinguishes
+    minor optimistic predictions from substantially larger errors.
+
+    The analysis focuses on near-failure conditions and the
+    intermediate RUL intervals previously identified as challenging.
+    """)
+    return
+
+
+@app.cell
 def _(rul_comparison_df):
     rul_large_overestimation_table = rul_comparison_df.pivot(
         index="Model",
@@ -551,7 +707,71 @@ def _(rul_comparison_df):
 
 
 @app.cell
-def _(Path, analyze_oof_errors_by_engine, pd, rul_comparison_df):
+def _(mo):
+    mo.md(r"""
+    ### Key Findings — Large Overestimations
+
+    Large RUL overestimations are relatively rare near failure
+    for the nonlinear finalists, despite differences in their
+    overall overestimation rates.
+
+    However, their frequency increases considerably at
+    intermediate RUL values, particularly around 60–79 cycles.
+
+    The choice of training objective has a substantial influence
+    on this behavior.
+
+    For example, between 60 and 69 remaining cycles:
+
+    - **XGBoost Pseudo-Huber** overestimates RUL by more than
+      20 cycles in approximately 31.9% of observations.
+    - **Gradient Boosting Quantile 0.30** reduces this proportion
+      to approximately 13.9%.
+
+    This suggests that quantile-based objectives can reduce
+    large optimistic predictions in specific degradation stages.
+
+    However, a lower overestimation frequency does not
+    necessarily indicate better overall performance.
+    Such improvements may come at the cost of increased
+    underestimation elsewhere in the engine's lifetime.
+
+    Furthermore, aggregate rates cannot reveal whether
+    these errors are isolated or repeatedly affect the
+    same engines.
+
+    The next analysis therefore investigates prediction
+    errors at the individual engine level.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 5. Engine-Level Error Analysis
+
+    RUL-band statistics aggregate predictions across the entire fleet,
+    but they cannot reveal whether large errors are isolated or
+    concentrated on specific engines.
+
+    We therefore examine prediction errors at the individual engine
+    level, focusing initially on the final 30 cycles before failure.
+
+    In addition to overall accuracy, we investigate:
+
+    - The maximum RUL overestimation observed for each engine.
+    - The number of predictions exceeding the true RUL by 20 cycles.
+    - The longest sequence of consecutive large overestimations.
+
+    This analysis helps distinguish occasional prediction errors
+    from persistent optimistic behavior along an engine's trajectory.
+    """)
+    return
+
+
+@app.cell
+def _(Path, analyze_oof_errors_by_engine, finalists, pd, rul_comparison_df):
     _engine_tables = []
 
     for _model_id in rul_comparison_df["Model"].unique():
@@ -575,10 +795,16 @@ def _(Path, analyze_oof_errors_by_engine, pd, rul_comparison_df):
     assert engine_errors_near_failure_df["Model"].nunique() == 14
     assert len(engine_errors_near_failure_df) == 14 * 80
 
-    engine_errors_near_failure_df.sort_values(
-        "max_overestimation",
-        ascending=False,
-    ).head(15).round(3)
+    _finalist_ids = {_config["id"] for _config in finalists}
+
+    (
+        engine_errors_near_failure_df.loc[
+            engine_errors_near_failure_df["Model"].isin(_finalist_ids)
+        ]
+        .sort_values("max_overestimation", ascending=False)
+        .head(10)
+        .round(3)
+    )
     return (engine_errors_near_failure_df,)
 
 
@@ -723,6 +949,35 @@ def _(Path, engine_errors_near_failure_df, pd):
 
 
 @app.cell
+def _(mo):
+    mo.md(r"""
+    ### Key Findings — Near-Failure Behavior
+
+    Large overestimations are not distributed uniformly across
+    the fleet.
+
+    Among the 80 development engines, XGBoost Pseudo-Huber produces
+    at least one overestimation exceeding 20 cycles on 9 engines,
+    compared with 6 for Gradient Boosting Quantile 0.30.
+
+    Only four engines are affected by both models, indicating that
+    their most difficult cases do not completely overlap.
+
+    The selected trajectories illustrate how models can behave
+    differently on the same engine, even when their aggregate
+    performance is relatively similar.
+
+    However, counting affected engines alone does not fully
+    characterize prediction reliability. The magnitude and
+    persistence of these errors must also be considered.
+
+    These findings reinforce the importance of examining
+    individual trajectories alongside aggregate evaluation metrics.
+    """)
+    return
+
+
+@app.cell
 def _(Path, analyze_oof_errors_by_engine, finalists, pd):
     _engine_tables = []
 
@@ -795,6 +1050,63 @@ def _(engine_errors_60_79_df, engine_errors_near_failure_df, finalists, pd):
         "MAE_spearman",
         ascending=False,
     ).round(3)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ### Are the Same Engines Difficult Throughout Degradation?
+
+    To investigate whether prediction difficulties persist across
+    degradation stages, we compare engine-level errors near failure
+    and at intermediate RUL values (60–79 cycles).
+
+    The Spearman correlation between engine-level MAE rankings is
+    positive but moderate across the finalist models.
+
+    This suggests that engines which are difficult to predict
+    in one degradation stage are not necessarily the most
+    difficult in another.
+
+    The overlap of engines affected by large overestimations
+    provides an additional perspective on this behavior.
+
+    Overall, prediction difficulty appears to depend not only
+    on the engine itself, but also on the stage of its
+    degradation trajectory.
+
+    **Implication:** Global accuracy and engine-level reliability
+    cannot be fully characterized by a single RUL interval.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 6. Overestimation–Underestimation Trade-off
+
+    The previous analyses revealed different error patterns
+    between XGBoost Pseudo-Huber and Gradient Boosting Quantile 0.30.
+
+    To better understand this trade-off, we compare the direction
+    and magnitude of their prediction errors across selected RUL
+    intervals.
+
+    Prediction error is defined as:
+
+    \[
+    e = \hat{y} - y
+    \]
+
+    Positive errors indicate RUL overestimation, while negative
+    errors indicate underestimation.
+
+    Particular attention is given to errors exceeding 20 cycles
+    in either direction, both near failure and at intermediate
+    remaining lifetimes.
+    """)
     return
 
 
@@ -875,6 +1187,64 @@ def _(rul_comparison_df):
 
 
 @app.cell
+def _(mo):
+    mo.md(r"""
+    ### Key Findings — Asymmetric Prediction Behavior
+
+    Gradient Boosting Quantile 0.30 substantially reduces large
+    RUL overestimations at intermediate degradation stages.
+
+    Between 60 and 79 remaining cycles, overestimations exceeding
+    20 cycles occur in approximately 15% of its predictions,
+    compared with 32% for XGBoost Pseudo-Huber.
+
+    However, this improvement comes with a significant trade-off
+    at higher RUL values.
+
+    Between 110 and 119 remaining cycles, GB Quantile 0.30
+    underestimates the target by more than 20 cycles in
+    approximately 34% of observations, compared with 17%
+    for XGBoost Pseudo-Huber.
+
+    The quantile model therefore produces more conservative
+    predictions in certain regions, but this behavior does
+    not consistently translate into better accuracy.
+
+    Observations with a target RUL capped at 125 cycles must
+    be interpreted separately: their target does not represent
+    their exact physical remaining lifetime.
+
+    **Overall, XGBoost Pseudo-Huber offers a more balanced
+    compromise across the evaluated degradation stages.**
+    While GB Quantile 0.30 reduces some potentially concerning
+    overestimations, its increased underestimation at higher
+    RUL values and weaker global MAE limit its suitability
+    as the general-purpose V1 reference model.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 7. Final Model Selection and Configuration Freeze
+
+    The previous analyses highlighted substantial differences
+    between finalist models in terms of global accuracy, error
+    severity, and behavior across degradation stages.
+
+    The final comparison brings together global performance
+    and error metrics from two critical RUL intervals:
+    near failure (0–29 cycles) and intermediate degradation
+    (60–79 cycles).
+
+    Model selection considers these complementary indicators
+    rather than relying exclusively on global MAE.
+    """)
+    return
+
+
+@app.cell
 def _(comparison_df, finalists, rul_comparison_df):
     _finalist_ids = {_finalist["id"] for _finalist in finalists}
 
@@ -926,6 +1296,51 @@ def _(comparison_df, finalists, rul_comparison_df):
 
 
 @app.cell
+def _(mo):
+    mo.md(r"""
+    ### Final Decision — XGBoost Pseudo-Huber
+
+    **XGBoost Pseudo-Huber is selected as the Hawkshot V1
+    reference model.**
+
+    It achieves the lowest global OOF MAE (8.745 cycles)
+    while maintaining competitive performance near failure
+    and a more balanced error profile across degradation stages.
+
+    Although Gradient Boosting Quantile 0.30 reduces large
+    overestimations in certain RUL intervals, this advantage
+    comes with increased underestimation at higher RUL values
+    and weaker overall accuracy.
+
+    The selected configuration therefore represents a
+    practical compromise for a general-purpose RUL predictor,
+    rather than an optimal solution for every operating condition.
+
+    ### Limitations and Next Steps
+
+    Several limitations must be considered:
+
+    - OOF results may reflect model-selection bias, as the
+      configurations were previously tuned on development data.
+    - The RUL target is capped at 125 cycles, limiting the
+      interpretation of early-life predictions.
+    - FD001 is a simulated dataset and does not establish
+      performance under real industrial operating conditions.
+    - No application-specific maintenance cost or safety
+      threshold has been validated.
+
+    The selected model configuration is frozen before any
+    independent evaluation.
+
+    **The next step is to train the frozen configuration
+    and evaluate its generalization performance on the
+    official FD001 test set, without further tuning based
+    on test results.**
+    """)
+    return
+
+
+@app.cell
 def _(Path, finalists, json, oof_feature_sets, temporal_config):
     _selected = next(
         _config for _config in finalists if _config["id"] == "xgboost_pseudohuber"
@@ -947,6 +1362,7 @@ def _(Path, finalists, json, oof_feature_sets, temporal_config):
         "feature_set": _selected["feature_set"],
         "temporal_config": temporal_config,
         "rul_cap": 125,
+        "feature_columns": _feature_columns,
     }
 
     _config_path = Path("configs/final_model_v1.json")
@@ -973,6 +1389,63 @@ def _(Path, finalists, json, oof_feature_sets, temporal_config):
 
     print("Selected model:", _selected["id"])
     print("Features:", len(_feature_columns))
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 8. Summary and Next Steps
+
+    This notebook evaluated twelve finalist configurations through
+    out-of-fold predictions, combining global performance metrics
+    with RUL-dependent and engine-level error analysis.
+
+    XGBoost Pseudo-Huber was selected as the Hawkshot V1 reference
+    model, achieving the lowest global OOF MAE (8.745 cycles)
+    while offering a reasonable compromise between prediction
+    accuracy and asymmetric errors.
+
+    The analysis also highlighted important limitations, including
+    increased errors at intermediate RUL values and occasional
+    large overestimations near failure.
+
+    ### V1 Scope and Future Improvements
+
+    The selected model should not be considered fully optimized.
+
+    Additional hyperparameter tuning, feature engineering, and
+    RUL-specific modeling strategies could potentially improve
+    predictive performance.
+
+    However, further optimization is deliberately deferred.
+    The priority is now to complete a reproducible end-to-end
+    ML system rather than pursue marginal improvements to
+    cross-validation metrics.
+
+    These potential improvements remain candidates for a
+    future V2 iteration, subject to time and project priorities.
+
+    ### Next Steps
+
+    With the V1 configuration frozen, the project moves toward:
+
+    1. **Independent evaluation:** Train the selected configuration
+       on the official FD001 training data and assess its
+       generalization on the untouched official test set.
+
+    2. **Reproducible ML pipeline:** Implement repeatable training,
+       model serialization, and batch inference.
+
+    3. **ML Engineering:** Develop an inference interface,
+       automated tests, CI, containerization, and basic monitoring.
+
+    The objective is to transform the experimental model into
+    a reproducible and demonstrable predictive maintenance system.
+
+    **Hawkshot V1 prioritizes completing the ML lifecycle;
+    model refinement remains an opportunity for V2.**
+    """)
     return
 
 
